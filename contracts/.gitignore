@@ -1,1 +1,42 @@
+# Environment files — NEVER commit these
+.env
+.env.local
+.env.production
+*.env
 
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Node
+node_modules/
+frontend/build/
+frontend/.next/
+*.log
+npm-debug.log*
+
+# Data files that may contain sensitive info
+data/ofac_snapshot.xml
+data/*.xml
+
+# Database volumes
+postgres_data/
+neo4j_data/
+redis_data/
+chroma_data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.DS_Store
+
+# Demo recordings
+*.mp4
+*.mov
