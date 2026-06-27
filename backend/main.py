@@ -108,11 +108,8 @@ app.add_middleware(
 )
 
 # ---- Include Routers ----------------------------------------
-# Uncomment as you build each module
-# app.include_router(auth.router, prefix="/auth", tags=["Auth"])
-# app.include_router(risk.router, prefix="/risk", tags=["Risk"])
-# app.include_router(playbook.router, prefix="/playbook", tags=["Playbook"])
-# app.include_router(agents.router, prefix="/agents", tags=["Agents"])
+from routers.api import router as api_router
+app.include_router(api_router) 
 
 # ---- Health Check -------------------------------------------
 @app.get("/health", tags=["System"])
