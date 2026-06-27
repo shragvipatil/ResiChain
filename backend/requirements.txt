@@ -1,0 +1,68 @@
+# Web Framework
+fastapi
+uvicorn[standard]
+python-multipart
+
+# Database Connections
+asyncpg
+sqlalchemy
+alembic
+psycopg2-binary
+
+# Redis
+redis
+
+# Neo4j
+neo4j
+
+# ChromaDB
+chromadb
+
+# LangGraph + LangChain
+langgraph
+langchain
+langchain-google-genai
+langchain-community
+
+# Google Gemini
+google-generativeai
+
+# Embeddings
+sentence-transformers
+
+# Scheduling
+apscheduler
+
+# HTTP Requests
+httpx
+aiohttp
+feedparser
+
+# Data Processing
+pandas
+numpy
+scipy
+
+# Auth
+python-jose[cryptography]
+passlib[bcrypt]
+pyotp
+
+# Environment
+python-dotenv
+
+# NLP Fallback
+spacy
+
+# Notifications
+twilio
+
+# Finance Data
+yfinance
+
+# PDF Export
+reportlab
+
+# Utilities
+pydantic
+pydantic-settings 
