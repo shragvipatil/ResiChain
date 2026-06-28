@@ -1,11 +1,12 @@
 import { USE_MOCK, apiClient } from "./client";
 import {
   mockRiskState, mockProcurement,
-  mockPrices, mockAgentStatus, mockVessels,
+  mockPrices, mockAgentStatus, mockVessels, mockPlaybook,
 } from "../mocks/data";
 import {
   CorridorRiskState, ProcurementResponse,
   PricesResponse, AgentsStatusResponse, VesselsResponse,
+  Playbook, ApprovePlaybookRequest, ApprovePlaybookResponse,
 } from "../types";
 
 const delay = (ms: number) => new Promise((res) => setTimeout(res, ms));
@@ -41,7 +42,7 @@ export const getVessels = async (): Promise<VesselsResponse> => {
 };
 
 export const updateRiskWeights = async (weights: {
-  military_incident: number;
+  military_incidents: number;
   conflict_escalation: number;
   sanctions_change: number;
   market_volatility: number;
@@ -49,5 +50,30 @@ export const updateRiskWeights = async (weights: {
 }) => {
   if (USE_MOCK) { await delay(400); return { weights_updated: true }; }
   const res = await apiClient.patch("/risk-weights", weights);
+  return res.data;
+};
+// ── Playbook endpoints (Day 8) ─────────────────────────────────────────────
+
+export const getPlaybook = async (id: string): Promise<Playbook> => {
+  if (USE_MOCK) { await delay(400); return mockPlaybook; }
+  const res = await apiClient.get(`/playbook/${id}`);
+  return res.data;
+};
+
+export const approvePlaybook = async (
+  id: string,
+  body: ApprovePlaybookRequest
+): Promise<ApprovePlaybookResponse> => {
+  if (USE_MOCK) {
+    await delay(600);
+    const allApproved = body.decisions.every((d) => d.decision === "approved");
+    const anyApproved = body.decisions.some((d)  => d.decision === "approved");
+    return {
+      playbook_id: id,
+      status: allApproved ? "fully_approved" : anyApproved ? "partially_approved" : "rejected",
+      updated_at: new Date().toISOString(),
+    };
+  }
+  const res = await apiClient.patch(`/playbook/${id}/approve`, body);
   return res.data;
 };

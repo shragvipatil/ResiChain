@@ -10,6 +10,7 @@ interface AppContextType {
   crisisModeActive: boolean;
   compoundDisruptionDetected: boolean;   // Day 7: triggers Cape route animation
   wsConnected: boolean;
+  playbookReady: boolean;
 }
 
 const AppContext = createContext<AppContextType | null>(null);
@@ -19,6 +20,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [agentStatus, setAgentStatus]   = useState<AgentsStatusResponse | null>(null);
   const [crisisModeActive, setCrisisModeActive]               = useState(false);
   const [compoundDisruptionDetected, setCompoundDisruptionDetected] = useState(false);
+  const [playbookReady, setPlaybookReady] = useState(false);
 
   const handleWsEvent = useCallback((event: WebSocketEvent) => {
     switch (event.type) {
@@ -31,6 +33,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       case "COMPOUND_DISRUPTION_DETECTED":
         setCrisisModeActive(true);
         setCompoundDisruptionDetected(true);  // Day 7: Leaflet Cape animation listens to this
+        break;
+      case "PLAYBOOK_READY":
+        setPlaybookReady(true);
+        setTimeout(() => setPlaybookReady(false), 1000);
+        break;
+      case "WATCH_ALERT":
+        // WATCH alert = early warning state (yellow state in UI)
+        // Does NOT trigger full crisis mode
+        // Future: could set watchAlertActive flag for UI badge
         break;
       case "AGENT_STARTED":
       case "AGENT_COMPLETED":
@@ -57,11 +68,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   return (
     <AppContext.Provider value={{
-      riskState, setRiskState,
-      agentStatus, setAgentStatus,
+      riskState,
+      setRiskState,
+      agentStatus,
+      setAgentStatus,
       crisisModeActive,
       compoundDisruptionDetected,
       wsConnected,
+      playbookReady,
     }}>
       {children}
     </AppContext.Provider>
