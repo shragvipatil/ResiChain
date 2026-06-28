@@ -72,7 +72,7 @@ async def lifespan(app: FastAPI):
     await init_neo4j()
     logger.info("Neo4j connected")
 
-   # 4. ChromaDB — disabled temporarily, will re-add later
+    # 4. ChromaDB — disabled temporarily, will re-add later
     logger.info("ChromaDB skipped for now") 
 
     # 5. Start background scheduler
@@ -80,6 +80,7 @@ async def lifespan(app: FastAPI):
     from agents.agent1_ingestion import run_agent1_poll, download_and_store_ofac
     from agents.clients.ofac_client import download_and_store_ofac as ofac_download
     from agents.agent1_verification import run_verification_cycle, run_event_expiry
+    from agents.agent3_risk_engine import run_agent3 
 
     # Agent 1 — polls every 5 minutes
     scheduler.add_job(
@@ -117,9 +118,19 @@ async def lifespan(app: FastAPI):
         id="event_expiry",
         replace_existing=True
     )
+
+    # Agent 3 — recalculates risk every 60 seconds
+    scheduler.add_job(
+        run_agent3,
+        "interval",
+        seconds=60,
+        id="agent3_risk_engine",
+        replace_existing=True
+    )
     
     logger.info("Scheduled: Agent 1 every 5 min, OFAC daily at 02:00 UTC") 
     logger.info("Scheduled: Verification every 30s, Expiry every 1h")
+    logger.info("Scheduled: Agent 3 every 60 seconds") 
     scheduler.start()
     logger.info("APScheduler started")
 

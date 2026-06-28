@@ -21,23 +21,17 @@ from contracts.api_contracts import (
 router = APIRouter(prefix="/api", tags=["API"])
 
 # ---- In-memory state for mock approvals -----------------
-# This gets replaced with real DB calls later
 _playbooks = {"pb_001": copy.deepcopy(MOCK_PLAYBOOK)}
 _risk_weights = {
     "military_incidents": 0.35,
-    "conflict_signals": 0.25,
-    "sanctions": 0.20,
+    "conflict_escalation": 0.25,
+    "sanctions_change": 0.25,
     "market_volatility": 0.10,
-    "seasonal": 0.10
+    "seasonal_risk": 0.05
 }
 
 # ---- JWT Middleware Skeleton -----------------------------
 def validate_token_format(authorization: Optional[str]) -> bool:
-    """
-    Validates token format only — does not check DB yet.
-    Real validation added on Day 5 when auth is built.
-    For now: any Bearer token passes.
-    """
     if not authorization:
         return False
     parts = authorization.split(" ")
@@ -45,22 +39,71 @@ def validate_token_format(authorization: Optional[str]) -> bool:
         return False
     return True
 
+# ---- Helper functions (module level) --------------------
+def _risk_to_status(score: float) -> str:
+    if score >= 0.65:
+        return "CRISIS"
+    elif score >= 0.45:
+        return "WATCH"
+    return "NORMAL"
+
+
+def _get_system_mode(risk_data: dict) -> str:
+    scores = [
+        v for k, v in risk_data.items()
+        if isinstance(v, (int, float))
+        and k not in ["updated_at"]
+    ]
+    if not scores:
+        return "NORMAL"
+    max_score = max(scores)
+    if max_score >= 0.65:
+        return "CRISIS"
+    elif max_score >= 0.45:
+        return "WATCH"
+    return "NORMAL"
+
 # =========================================================
 # ENDPOINTS
 # =========================================================
 
 # GET /api/risk-state
-# Dashboard risk overview cards
 @router.get("/risk-state")
 async def get_risk_state():
     """
-    Returns current corridor risk scores and system mode.
+    Returns LIVE corridor risk scores from Redis.
+    Falls back to mock data if Redis cache expired.
     Used by: Ministry dashboard risk cards, map overlay
     """
+    from db.redis_client import get_redis
+    import json
+
+    try:
+        r = await get_redis()
+        data = await r.get("risk:state")
+        if data:
+            risk_data = json.loads(data)
+            return {
+                "corridors": {
+                    k: {
+                        "risk_score": v,
+                        "status": _risk_to_status(v),
+                        "trend": "stable"
+                    }
+                    for k, v in risk_data.items()
+                    if k not in ["updated_at", "updated_corridors"]
+                    and isinstance(v, (int, float))
+                },
+                "updated_at": risk_data.get("updated_at"),
+                "system_mode": _get_system_mode(risk_data)
+            }
+    except Exception:
+        pass
+
     return MOCK_RISK_STATE
 
+
 # GET /api/events
-# Recent verified events list
 @router.get("/events")
 async def get_events(limit: int = 10, corridor: Optional[str] = None):
     """
@@ -72,8 +115,8 @@ async def get_events(limit: int = 10, corridor: Optional[str] = None):
         events = [e for e in events if e["corridor"] == corridor]
     return {"events": events[:limit], "total": len(events)}
 
+
 # GET /api/procurement/options
-# Procurement options from Agent 6
 @router.get("/procurement/options")
 async def get_procurement_options(status: Optional[str] = None):
     """
@@ -85,8 +128,8 @@ async def get_procurement_options(status: Optional[str] = None):
         options = [o for o in options if o["status"] == status]
     return {"options": options, "total": len(options)}
 
+
 # GET /api/playbook/{id}
-# Full playbook details
 @router.get("/playbook/{playbook_id}")
 async def get_playbook(playbook_id: str):
     """
@@ -95,11 +138,14 @@ async def get_playbook(playbook_id: str):
     """
     playbook = _playbooks.get(playbook_id)
     if not playbook:
-        raise HTTPException(status_code=404, detail=f"Playbook {playbook_id} not found")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Playbook {playbook_id} not found"
+        )
     return playbook
 
+
 # PATCH /api/playbook/{id}/approve
-# Analyst approves or rejects a playbook action
 @router.patch("/playbook/{playbook_id}/approve")
 async def approve_playbook_action(
     playbook_id: str,
@@ -141,27 +187,34 @@ async def approve_playbook_action(
         "rejected_count": len(playbook["rejected_actions"])
     }
 
+
 # PATCH /api/risk-weights
-# Admin updates agent risk scoring weights
 @router.patch("/risk-weights")
 async def update_risk_weights(body: dict):
     """
-    Updates the weights used by Agent 3 risk scoring formula.
-    Body: {"military_incidents": 0.4, "conflict_signals": 0.2, ...}
-    Used by: Admin dashboard
+    Updates risk factor weights and immediately recalculates
+    risk vector with new weights.
+    Body: {"military_incidents": 0.4, "conflict_escalation": 0.2, ...}
+    Used by: Admin dashboard weight sliders
     """
-    global _risk_weights
     total = sum(body.values())
     if abs(total - 1.0) > 0.01:
         raise HTTPException(
             status_code=400,
             detail=f"Weights must sum to 1.0, got {total:.2f}"
         )
-    _risk_weights.update(body)
-    return {"message": "Risk weights updated", "weights": _risk_weights}
+
+    from agents.agent3_risk_engine import update_risk_weights as agent3_update
+    new_risk_vector = await agent3_update(body)
+
+    return {
+        "message": "Weights updated and risk recalculated",
+        "new_weights": body,
+        "new_risk_vector": new_risk_vector
+    }
+
 
 # GET /api/agents/status
-# All 8 agent run statuses
 @router.get("/agents/status")
 async def get_agents_status():
     """
@@ -170,8 +223,8 @@ async def get_agents_status():
     """
     return {"agents": MOCK_AGENT_STATUS}
 
+
 # GET /api/map/vessels
-# Live tanker positions for Leaflet map
 @router.get("/map/vessels")
 async def get_vessels():
     """
@@ -181,8 +234,8 @@ async def get_vessels():
     """
     return {"vessels": MOCK_VESSELS}
 
+
 # GET /api/kgraph
-# Knowledge graph nodes and edges for visualization
 @router.get("/kgraph")
 async def get_knowledge_graph():
     """
@@ -191,8 +244,8 @@ async def get_knowledge_graph():
     """
     return MOCK_KGRAPH
 
+
 # GET /api/spr/status
-# SPR current level and schedule
 @router.get("/spr/status")
 async def get_spr_status():
     """
@@ -208,10 +261,10 @@ async def get_spr_status():
         "days_cover_with_commercial": 9.5,
         "active_drawdown": False,
         "drawdown_schedule": None
-    } 
+    }
+
 
 # POST /api/demo/inject-crisis
-# Demo use only — triggers the crisis flow
 @router.post("/demo/inject-crisis")
 async def inject_demo_crisis(
     corridor: str = "Hormuz",
@@ -229,9 +282,10 @@ async def inject_demo_crisis(
         "message": f"Demo crisis injected for {corridor}",
         "severity": severity,
         "note": "UKMTO confirmation follows in 10 seconds"
-    } 
+    }
+
+
 # GET /api/debug/corridor-state
-# Shows current active corridor events in memory
 @router.get("/debug/corridor-state")
 async def get_corridor_state():
     """
@@ -246,7 +300,9 @@ async def get_corridor_state():
         state[corridor] = {
             "event_count": len(events),
             "sources": list(set(e["source"] for e in events)),
-            "max_severity": max((e["severity"] for e in events), default=0),
+            "max_severity": max(
+                (e["severity"] for e in events), default=0
+            ),
             "latest_event": max(
                 (e["event_time"].isoformat() for e in events),
                 default=None
@@ -261,8 +317,8 @@ async def get_corridor_state():
         "checked_at": datetime.utcnow().isoformat()
     }
 
+
 # GET /api/debug/verified-events
-# Shows recent verified events from PostgreSQL
 @router.get("/debug/verified-events")
 async def get_verified_events(limit: int = 10):
     """
