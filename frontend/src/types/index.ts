@@ -136,3 +136,53 @@ export interface WebSocketEvent {
   type: WebSocketEventType;
   payload: Record<string, unknown>;
 }
+// ── Playbook types (Day 8) ────────────────────────────────────────────────────
+
+export type PlaybookStatus =
+  | "pending_review"
+  | "partially_approved"
+  | "fully_approved"
+  | "rejected";
+
+export type ActionDecision = "approved" | "rejected" | "pending";
+
+export interface PlaybookAction {
+  action_id:                  string;
+  title:                      string;
+  supplier:                   string;
+  crude_grade:                string;
+  route:                      string;
+  confidence:                 number;
+  cost_delta_usd_per_barrel:  number;
+  volume_mbd:                 number;
+  transit_days:               number;
+  contract_reference:         string;
+  rationale:                  string;       // one-line reason this was recommended
+}
+
+export interface Playbook {
+  playbook_id:        string;
+  status:             PlaybookStatus;
+  created_at:         string;
+  signal_detected_at: string;             // T+00:00 — when Agent 1 first saw the event
+  playbook_ready_at:  string;             // T+02:47 — the timestamp pair claim
+  corridor_affected:  string;
+  compound_risk:      number;
+  overall_confidence: number;
+  actions:            PlaybookAction[];
+  analyst_notes?:     string;
+}
+
+export interface ApprovePlaybookRequest {
+  decisions: {
+    action_id: string;
+    decision:  ActionDecision;
+    note?:     string;
+  }[];
+}
+
+export interface ApprovePlaybookResponse {
+  playbook_id: string;
+  status:      PlaybookStatus;
+  updated_at:  string;
+}

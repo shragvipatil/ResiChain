@@ -4,6 +4,7 @@ import {
   PricesResponse,
   AgentsStatusResponse,
   VesselsResponse,
+  Playbook
 } from "../types";
 
 /* ----------------------------- RISK STATE ----------------------------- */
@@ -215,4 +216,63 @@ export const mockVessels: VesselsResponse = {
   ],
   cache_age_seconds: 180,
   source: "static_demo",
+};
+/* ─────────────────────────── PLAYBOOK MOCK ─────────────────────────────── */
+
+
+// Signal detected at T+00:00, playbook ready at T+02:47
+// These timestamps are the core demo claim — "167 seconds from signal to playbook"
+const signalTime  = new Date(Date.now() - 167_000).toISOString();
+const playbookTime = new Date().toISOString();
+
+export const mockPlaybook: Playbook = {
+  playbook_id:        "pb_20240115_001",
+  status:             "pending_review",
+  created_at:         playbookTime,
+  signal_detected_at: signalTime,
+  playbook_ready_at:  playbookTime,
+  corridor_affected:  "Hormuz",
+  compound_risk:      0.41,
+  overall_confidence: 0.87,
+  actions: [
+    {
+      action_id:                 "act_001",
+      title:                     "Increase UAE Murban allocation",
+      supplier:                  "UAE (ADNOC)",
+      crude_grade:               "Murban",
+      route:                     "Cape of Good Hope",
+      confidence:                0.91,
+      cost_delta_usd_per_barrel: 4.20,
+      volume_mbd:                0.15,
+      transit_days:              22,
+      contract_reference:        "ADNOC-2024-IND-047",
+      rationale:                 "Highest confidence option — Cape route unaffected, Murban compatible with Kochi and Jamnagar",
+    },
+    {
+      action_id:                 "act_002",
+      title:                     "Activate Saudi Arabia spot purchase",
+      supplier:                  "Saudi Aramco",
+      crude_grade:               "Arab Light",
+      route:                     "Cape of Good Hope",
+      confidence:                0.88,
+      cost_delta_usd_per_barrel: 3.80,
+      volume_mbd:                0.10,
+      transit_days:              24,
+      contract_reference:        "ARAMCO-2024-IND-112",
+      rationale:                 "Diversification buffer — Arab Light accepted at all five Indian refineries",
+    },
+    {
+      action_id:                 "act_003",
+      title:                     "Partial Russia Urals top-up (headroom only)",
+      supplier:                  "Rosneft / Nayara",
+      crude_grade:               "Urals",
+      route:                     "Direct (non-Hormuz)",
+      confidence:                0.61,
+      cost_delta_usd_per_barrel: 1.20,
+      volume_mbd:                0.02,
+      transit_days:              18,
+      contract_reference:        "NAYARA-2024-RU-088",
+      rationale:                 "Only 0.02 Mb/d headroom before MoPNG 40% cap — partial approval only",
+    },
+  ],
 };
