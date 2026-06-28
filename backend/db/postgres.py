@@ -128,6 +128,35 @@ async def init_db():
                 aliases JSONB,
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )
+        """) 
+
+        # ---- Verified Events Table --------------------------
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS verified_events (
+                id SERIAL PRIMARY KEY,
+                corridor TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                confidence FLOAT,
+                sources_confirming JSONB,
+                source_count INTEGER,
+                max_severity INTEGER,
+                evidence JSONB,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
         """)
+
+        # ---- Audit Events Table (expired events archive) ----
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS audit_events (
+                id SERIAL PRIMARY KEY,
+                corridor TEXT,
+                source TEXT,
+                confidence FLOAT,
+                severity INTEGER,
+                event_time TIMESTAMPTZ,
+                archived_at TIMESTAMPTZ DEFAULT NOW(),
+                raw_event JSONB
+            )
+        """) 
 
     logger.info("All PostgreSQL tables created/verified") 

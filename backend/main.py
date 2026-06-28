@@ -79,6 +79,7 @@ async def lifespan(app: FastAPI):
     # Agent 1 polling will be added here once built
     from agents.agent1_ingestion import run_agent1_poll, download_and_store_ofac
     from agents.clients.ofac_client import download_and_store_ofac as ofac_download
+    from agents.agent1_verification import run_verification_cycle, run_event_expiry
 
     # Agent 1 — polls every 5 minutes
     scheduler.add_job(
@@ -99,7 +100,26 @@ async def lifespan(app: FastAPI):
         replace_existing=True
     )
 
+    # Verification layer — runs every 30 seconds
+    scheduler.add_job(
+        run_verification_cycle,
+        "interval",
+        seconds=30,
+        id="agent1_verification",
+        replace_existing=True
+    )
+
+    # Event expiry — runs every hour
+    scheduler.add_job(
+        run_event_expiry,
+        "interval",
+        hours=1,
+        id="event_expiry",
+        replace_existing=True
+    )
+    
     logger.info("Scheduled: Agent 1 every 5 min, OFAC daily at 02:00 UTC") 
+    logger.info("Scheduled: Verification every 30s, Expiry every 1h")
     scheduler.start()
     logger.info("APScheduler started")
 

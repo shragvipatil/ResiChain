@@ -230,3 +230,57 @@ async def inject_demo_crisis(
         "severity": severity,
         "note": "UKMTO confirmation follows in 10 seconds"
     } 
+# GET /api/debug/corridor-state
+# Shows current active corridor events in memory
+@router.get("/debug/corridor-state")
+async def get_corridor_state():
+    """
+    Debug endpoint — shows current verification state.
+    Use this to confirm events are flowing through the pipeline.
+    """
+    from agents.agent1_verification import _active_corridor_events
+    from datetime import datetime
+
+    state = {}
+    for corridor, events in _active_corridor_events.items():
+        state[corridor] = {
+            "event_count": len(events),
+            "sources": list(set(e["source"] for e in events)),
+            "max_severity": max((e["severity"] for e in events), default=0),
+            "latest_event": max(
+                (e["event_time"].isoformat() for e in events),
+                default=None
+            )
+        }
+
+    return {
+        "active_corridors": state,
+        "total_active_events": sum(
+            len(v) for v in _active_corridor_events.values()
+        ),
+        "checked_at": datetime.utcnow().isoformat()
+    }
+
+# GET /api/debug/verified-events
+# Shows recent verified events from PostgreSQL
+@router.get("/debug/verified-events")
+async def get_verified_events(limit: int = 10):
+    """
+    Shows recent verified events from PostgreSQL.
+    Use this to confirm WATCH/CONFIRMED events are being written.
+    """
+    from db.postgres import get_db_pool
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT corridor, stage, confidence,
+                   sources_confirming, max_severity, created_at
+            FROM verified_events
+            ORDER BY created_at DESC
+            LIMIT $1
+        """, limit)
+
+    return {
+        "verified_events": [dict(row) for row in rows],
+        "total": len(rows)
+    } 

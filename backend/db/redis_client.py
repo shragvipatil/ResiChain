@@ -51,7 +51,10 @@ async def init_redis_streams():
         json.dumps(default_risk_state)
     )
 
-    logger.info("Redis streams initialised. Default risk state set.")
+    # Setup consumer group for verification layer
+    await setup_consumer_group()
+
+    logger.info("Redis streams initialised (events:raw, risk:state, verification_group)")
 
 # ---- Stream: Publish Event (Agent 1 uses this) --------------
 async def publish_event(event: dict) -> str:
@@ -142,3 +145,74 @@ async def is_token_blacklisted(jti: str) -> bool:
     """Checks if a JWT token has been revoked."""
     r = await get_redis()
     return await r.exists(f"blacklist:{jti}") > 0 
+
+# ---- Consumer Group Setup (Fix 1 — xreadgroup) ----------
+async def setup_consumer_group():
+    """
+    Creates consumer group for events:raw stream.
+    Consumer groups ensure no message is ever lost even if
+    the consumer is busy when the message arrives.
+    Called once at startup.
+    """
+    r = await get_redis()
+    try:
+        await r.xgroup_create(
+            "events:raw",
+            "verification_group",
+            id="0",
+            mkstream=True
+        )
+        logger.info("Consumer group 'verification_group' created")
+    except Exception as e:
+        if "BUSYGROUP" in str(e):
+            logger.info("Consumer group already exists — skipping")
+        else:
+            logger.error(f"Consumer group error: {e}")
+
+async def consume_from_group(consumer_name: str, count: int = 10) -> list:
+    """
+    Reads messages from events:raw stream using consumer group.
+    Messages stay in stream until acknowledged — never lost.
+    
+    Returns list of (message_id, event_dict) tuples.
+    """
+    r = await get_redis()
+    try:
+        results = await r.xreadgroup(
+            groupname="verification_group",
+            consumername=consumer_name,
+            streams={"events:raw": ">"},
+            count=count,
+            block=1000
+        )
+        messages = []
+        if results:
+            for stream_name, msgs in results:
+                for msg_id, msg_data in msgs:
+                    event = json.loads(msg_data["data"])
+                    messages.append((msg_id, event))
+        return messages
+    except Exception as e:
+        logger.error(f"Consumer group read error: {e}")
+        return []
+
+async def acknowledge_message(message_id: str):
+    """
+    Marks a message as processed in the consumer group.
+    Call this after successfully processing an event.
+    """
+    r = await get_redis()
+    await r.xack("events:raw", "verification_group", message_id)
+
+async def publish_verified_event(event: dict) -> str:
+    """
+    Publishes a verified event to events:verified stream.
+    Only WATCH and CONFIRMED events go here.
+    """
+    r = await get_redis()
+    entry_id = await r.xadd(
+        "events:verified",
+        {"data": json.dumps(event)},
+        maxlen=500
+    )
+    return entry_id 
