@@ -77,7 +77,29 @@ async def lifespan(app: FastAPI):
 
     # 5. Start background scheduler
     # Agent 1 polling will be added here once built
-    # scheduler.add_job(agent1_poll, "interval", seconds=int(os.getenv("GDELT_POLL_INTERVAL_SECONDS", 300)))
+    from agents.agent1_ingestion import run_agent1_poll, download_and_store_ofac
+    from agents.clients.ofac_client import download_and_store_ofac as ofac_download
+
+    # Agent 1 — polls every 5 minutes
+    scheduler.add_job(
+        run_agent1_poll,
+        "interval",
+        seconds=int(os.getenv("GDELT_POLL_INTERVAL_SECONDS", 300)),
+        id="agent1_poll",
+        replace_existing=True
+    )
+
+    # OFAC — downloads daily at 02:00 UTC
+    scheduler.add_job(
+        ofac_download,
+        "cron",
+        hour=2,
+        minute=0,
+        id="ofac_daily",
+        replace_existing=True
+    )
+
+    logger.info("Scheduled: Agent 1 every 5 min, OFAC daily at 02:00 UTC") 
     scheduler.start()
     logger.info("APScheduler started")
 

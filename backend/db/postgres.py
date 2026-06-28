@@ -116,4 +116,18 @@ async def init_db():
             )
         """)
 
+        # ---- OFAC Sanctions Table ---------------------------
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS ofac_sanctions (
+                uid TEXT PRIMARY KEY,
+                full_name TEXT NOT NULL,
+                first_name TEXT,
+                last_name TEXT,
+                sdn_type TEXT,
+                programs JSONB,
+                aliases JSONB,
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+
     logger.info("All PostgreSQL tables created/verified") 

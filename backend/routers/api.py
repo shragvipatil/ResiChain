@@ -209,3 +209,24 @@ async def get_spr_status():
         "active_drawdown": False,
         "drawdown_schedule": None
     } 
+
+# POST /api/demo/inject-crisis
+# Demo use only — triggers the crisis flow
+@router.post("/demo/inject-crisis")
+async def inject_demo_crisis(
+    corridor: str = "Hormuz",
+    severity: int = 8
+):
+    """
+    DEMO ONLY endpoint.
+    Injects a fake crisis event to trigger the full agent pipeline.
+    Called at Minute 2 of the live demo.
+    """
+    from agents.agent1_ingestion import run_agent1_demo_inject
+    import asyncio
+    asyncio.create_task(run_agent1_demo_inject(corridor, severity))
+    return {
+        "message": f"Demo crisis injected for {corridor}",
+        "severity": severity,
+        "note": "UKMTO confirmation follows in 10 seconds"
+    } 
