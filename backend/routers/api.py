@@ -219,9 +219,100 @@ async def update_risk_weights(body: dict):
 async def get_agents_status():
     """
     Returns last run time and status for all 8 agents.
+    Reads real data from Redis where available.
+    Falls back to mock data for agents not yet built.
     Used by: Admin dashboard, Ministry agent status panel
     """
-    return {"agents": MOCK_AGENT_STATUS}
+    from db.redis_client import get_redis
+    import json
+
+    r = await get_redis()
+
+    # Read real run data from Redis for built agents
+    agent1_data = await r.get("agent1:last_run")
+    agent3_data = await r.get("agent3:last_run")
+
+    # Parse real data if available
+    agent1_info = json.loads(agent1_data) if agent1_data else None
+    agent3_info = json.loads(agent3_data) if agent3_data else None
+
+    # Get Redis stream depths
+    try:
+        raw_stream_len = await r.xlen("events:raw")
+        verified_stream_len = await r.xlen("events:verified")
+    except Exception:
+        raw_stream_len = 0
+        verified_stream_len = 0
+
+    agents = [
+        {
+            "agent": "Agent1_Ingestion",
+            "status": "running" if agent1_info else "idle",
+            "last_run": agent1_info.get("timestamp") if agent1_info else None,
+            "events_processed": agent1_info.get("events_found", 0) if agent1_info else 0,
+            "queue_depth": raw_stream_len,
+            "mode": agent1_info.get("system_mode", "NORMAL") if agent1_info else "NORMAL"
+        },
+        {
+            "agent": "Agent2_Extraction",
+            "status": "idle",
+            "last_run": None,
+            "queue_depth": verified_stream_len,
+            "mode": "STANDBY"
+        },
+        {
+            "agent": "Agent3_RiskEngine",
+            "status": "running" if agent3_info else "idle",
+            "last_run": agent3_info.get("timestamp") if agent3_info else None,
+            "risk_scores_updated": 4 if agent3_info else 0,
+            "queue_depth": 0,
+            "mode": "RUNNING" if agent3_info else "STANDBY"
+        },
+        {
+            "agent": "Agent4_Compound",
+            "status": "standby",
+            "last_run": None,
+            "queue_depth": 0,
+            "mode": "STANDBY"
+        },
+        {
+            "agent": "Agent5_SPR",
+            "status": "standby",
+            "last_run": None,
+            "queue_depth": 0,
+            "mode": "STANDBY"
+        },
+        {
+            "agent": "Agent6_Procurement",
+            "status": "standby",
+            "last_run": None,
+            "queue_depth": 0,
+            "mode": "STANDBY"
+        },
+        {
+            "agent": "Agent7_Validator",
+            "status": "standby",
+            "last_run": None,
+            "queue_depth": 0,
+            "mode": "STANDBY"
+        },
+        {
+            "agent": "Agent8_Playbook",
+            "status": "standby",
+            "last_run": None,
+            "queue_depth": 0,
+            "mode": "STANDBY"
+        }
+    ]
+
+    return {
+        "agents": agents,
+        "stream_depths": {
+            "events_raw": raw_stream_len,
+            "events_verified": verified_stream_len
+        },
+        "checked_at": __import__('datetime').datetime.utcnow().isoformat()
+    }
 
 
 # GET /api/map/vessels
@@ -229,10 +320,24 @@ async def get_agents_status():
 async def get_vessels():
     """
     Returns tanker positions for map display.
-    Hardcoded for demo — real AISHub data added later.
+    Reads from Redis cache if available.
+    Falls back to hardcoded mock positions for demo.
     Used by: Map component on all dashboards
     """
-    return {"vessels": MOCK_VESSELS}
+    from db.redis_client import get_redis
+    import json
+
+    try:
+        r = await get_redis()
+        cached = await r.get("ais:vessels:latest")
+        if cached:
+            vessels = json.loads(cached)
+            return {"vessels": vessels, "source": "live_cache"}
+    except Exception:
+        pass
+
+    # Fallback to hardcoded mock for demo
+    return {"vessels": MOCK_VESSELS, "source": "mock"} 
 
 
 # GET /api/kgraph
@@ -339,4 +444,37 @@ async def get_verified_events(limit: int = 10):
     return {
         "verified_events": [dict(row) for row in rows],
         "total": len(rows)
+    } 
+
+
+# POST /api/debug/broadcast-test
+# Tests WebSocket broadcast to all connected clients
+@router.post("/debug/broadcast-test")
+async def test_broadcast(body: dict):
+    """
+    Manually triggers a WebSocket broadcast to all connected clients.
+    Use this to test the WebSocket connection from the frontend.
+
+    Body: {"type": "risk_update", "data": {"Hormuz": 0.82}}
+
+    To test:
+    1. Open http://localhost:8000/docs in one tab
+    2. Open browser console in another tab
+    3. Run this in console:
+       const ws = new WebSocket('ws://localhost:8000/ws/agent-status')
+       ws.onmessage = (e) => console.log(JSON.parse(e.data))
+    4. Execute this endpoint
+    5. Should see the message appear in console
+    """
+    from main import broadcast_to_dashboard
+
+    message_type = body.get("type", "test")
+    data = body.get("data", {"message": "test broadcast"})
+
+    await broadcast_to_dashboard(message_type, data)
+
+    return {
+        "message": "Broadcast sent to all connected WebSocket clients",
+        "type": message_type,
+        "data": data
     } 
