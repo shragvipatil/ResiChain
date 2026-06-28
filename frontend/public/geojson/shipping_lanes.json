@@ -1,0 +1,136 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Strait of Hormuz",
+        "corridor": "Hormuz",
+        "description": "Critical choke point — ~20% of global oil supply passes through here",
+        "daily_barrels_mbd": 21
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [56.0, 24.5],
+          [56.5, 24.2],
+          [57.0, 23.8],
+          [57.8, 23.5],
+          [58.5, 23.3],
+          [59.5, 23.0],
+          [60.5, 22.5],
+          [61.5, 22.0],
+          [63.0, 21.5],
+          [65.0, 21.0],
+          [67.0, 20.5],
+          [68.0, 20.3]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Red Sea / Bab-el-Mandeb",
+        "corridor": "Red_Sea",
+        "description": "Southern Red Sea entry — route for Suez Canal transit",
+        "daily_barrels_mbd": 6
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [43.5, 12.5],
+          [43.3, 14.0],
+          [42.9, 16.0],
+          [42.5, 18.5],
+          [42.2, 20.5],
+          [38.5, 22.0],
+          [37.5, 24.0],
+          [36.5, 26.5],
+          [35.0, 28.5],
+          [33.5, 30.0],
+          [32.5, 31.0]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Suez Canal",
+        "corridor": "Suez",
+        "description": "~12% of global trade; diverts ~14,000 km vs Cape route",
+        "daily_barrels_mbd": 5
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [32.5, 31.0],
+          [32.4, 31.5],
+          [32.3, 32.0],
+          [32.2, 32.5],
+          [32.1, 33.0],
+          [32.0, 33.5],
+          [31.5, 34.0],
+          [30.5, 34.5],
+          [29.0, 35.0],
+          [27.0, 35.5],
+          [25.0, 36.0]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Cape of Good Hope Route",
+        "corridor": "Cape",
+        "description": "Fallback route when Suez/Hormuz unavailable — adds 10-15 days",
+        "daily_barrels_mbd": 3
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [68.0, 20.3],
+          [65.0, 15.0],
+          [60.0, 8.0],
+          [55.0, 0.0],
+          [50.0, -10.0],
+          [45.0, -18.0],
+          [40.0, -25.0],
+          [35.0, -30.0],
+          [30.0, -33.0],
+          [25.0, -35.0],
+          [20.0, -35.5],
+          [18.5, -34.0],
+          [15.0, -32.0],
+          [10.0, -25.0],
+          [5.0, -15.0],
+          [0.0, -5.0],
+          [-5.0, 5.0],
+          [-10.0, 15.0],
+          [-15.0, 18.0],
+          [-17.5, 14.5]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Gulf of Aden",
+        "corridor": "Red_Sea",
+        "description": "Entry corridor to Red Sea and Bab-el-Mandeb strait",
+        "daily_barrels_mbd": 6
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [68.0, 20.3],
+          [65.0, 18.5],
+          [58.0, 14.5],
+          [53.0, 13.0],
+          [48.0, 12.0],
+          [45.0, 11.5],
+          [43.5, 12.5]
+        ]
+      }
+    }
+  ]
+}
