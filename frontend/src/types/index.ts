@@ -1,0 +1,129 @@
+export interface CorridorRiskState {
+  corridors: {
+    Hormuz: number;
+    Red_Sea: number;
+    Suez: number;
+    Cape: number;
+  };
+  confidence: {
+    Hormuz: number;
+    Red_Sea: number;
+    Suez: number;
+    Cape: number;
+  };
+  delta_from_baseline: {
+    Hormuz: number;
+    Red_Sea: number;
+    Suez: number;
+    Cape: number;
+  };
+  updated_at: string;
+  crisis_mode_active: boolean;
+}
+
+export type SourceName = "GDELT" | "UKMTO" | "OFAC" | "RELIEFWEB" | "ALPHA_VANTAGE";
+export type CorridorName = "Hormuz" | "Red_Sea" | "Suez" | "Cape" | "Unknown";
+export type EventStage = "WATCH" | "CONFIRMED";
+export type OptionStatus = "APPROVED" | "BLOCKED" | "PARTIAL";
+export type AgentStatus = "RUNNING" | "IDLE" | "INACTIVE" | "ERROR";
+
+export interface VerifiedEvent {
+  event_id: string;
+  event: string;
+  source: SourceName;
+  sources_confirming: SourceName[];
+  location: string;
+  corridor: CorridorName;
+  severity: number;
+  stage: EventStage;
+  confidence: number;
+  event_timestamp: string;
+  verified_at: string;
+  hours_since_event: number;
+}
+
+export interface ProcurementOption {
+  option_id: string;
+  supplier: string;
+  crude_grade: string;
+  status: OptionStatus;
+  confidence: number;
+  rule_triggered?: string;
+  reason: {
+    rule: string;
+    value: string;
+    threshold: string | null;
+    source: string;
+    headroom_mbd?: number;
+  } | null;
+  route?: string;
+  transit_days?: number;
+  cost_delta_usd_per_barrel?: number;
+  volume_mbd?: number;
+  tanker_available?: boolean;
+  max_allowed_delta_mbd?: number;
+  evaluated_at: string;
+}
+
+export interface ProcurementResponse {
+  evaluated_at: string;
+  surviving_corridors: CorridorName[];
+  options: ProcurementOption[];
+}
+
+export interface PricesResponse {
+  brent_usd: number;
+  wti_usd: number;
+  brent_change_pct_24h: number;
+  wti_change_pct_24h: number;
+  fetched_at: string;
+  source: string;
+}
+
+export interface Vessel {
+  mmsi: string;
+  name: string;
+  vessel_type: string;
+  latitude: number;
+  longitude: number;
+  speed_knots: number;
+  heading_degrees: number;
+  last_updated: string;
+}
+
+export interface VesselsResponse {
+  vessels: Vessel[];
+  cache_age_seconds: number;
+  source: string;
+}
+
+export interface AgentInfo {
+  status: AgentStatus;
+  last_run?: string;
+  events_today?: number;
+  queue_depth?: number;
+  note?: string;
+}
+
+export interface AgentsStatusResponse {
+  agents: Record<string, AgentInfo>;
+  redis_stream_depths: {
+    "events:raw": number;
+    "events:verified": number;
+  };
+  crisis_mode_active: boolean;
+}
+
+export type WebSocketEventType =
+  | "RISK_STATE_UPDATED"
+  | "WATCH_ALERT"
+  | "CONFIRMED_ALERT"
+  | "AGENT_STARTED"
+  | "AGENT_COMPLETED"
+  | "COMPOUND_DISRUPTION_DETECTED"
+  | "PLAYBOOK_READY";
+
+export interface WebSocketEvent {
+  type: WebSocketEventType;
+  payload: Record<string, unknown>;
+}
