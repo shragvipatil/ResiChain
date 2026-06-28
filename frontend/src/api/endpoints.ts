@@ -41,7 +41,7 @@ export const getVessels = async (): Promise<VesselsResponse> => {
 };
 
 export const updateRiskWeights = async (weights: {
-  military_incident: number;
+  military_incidents: number;
   conflict_escalation: number;
   sanctions_change: number;
   market_volatility: number;

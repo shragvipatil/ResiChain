@@ -6,13 +6,37 @@ import {
   VesselsResponse,
 } from "../types";
 
+/* ----------------------------- RISK STATE ----------------------------- */
+
 export const mockRiskState: CorridorRiskState = {
-  corridors: { Hormuz: 0.34, Red_Sea: 0.41, Suez: 0.18, Cape: 0.05 },
-  confidence: { Hormuz: 0.78, Red_Sea: 0.71, Suez: 0.65, Cape: 0.82 },
-  delta_from_baseline: { Hormuz: 0.04, Red_Sea: 0.11, Suez: -0.02, Cape: 0.01 },
-  updated_at: new Date().toISOString(),
-  crisis_mode_active: false,
+  corridors: {
+    Hormuz: {
+      risk_score: 0.34,
+      status: "WATCH",
+      trend: "stable",
+    },
+    Red_Sea: {
+      risk_score: 0.41,
+      status: "WATCH",
+      trend: "rising",
+    },
+    Suez: {
+      risk_score: 0.18,
+      status: "NORMAL",
+      trend: "stable",
+    },
+    Cape: {
+      risk_score: 0.05,
+      status: "NORMAL",
+      trend: "stable",
+    },
+  },
+  compound_risk: 0.52,
+  last_updated: new Date().toISOString(),
+  system_mode: "WATCH",
 };
+
+/* -------------------------- PROCUREMENT MOCK -------------------------- */
 
 export const mockProcurement: ProcurementResponse = {
   evaluated_at: new Date().toISOString(),
@@ -43,7 +67,7 @@ export const mockProcurement: ProcurementResponse = {
       reason: {
         rule: "GRADE_INCOMPATIBLE",
         value: "Merey (API 16, sulfur 2.5%)",
-        threshold: "Kochi BPCL max sulfur 1.8%, no coker unit",
+        threshold: "Kochi BPCL max sulfur 1.8%",
         source: "Neo4j COMPATIBLE_WITH relationship",
       },
       evaluated_at: new Date().toISOString(),
@@ -96,6 +120,8 @@ export const mockProcurement: ProcurementResponse = {
   ],
 };
 
+/* ----------------------------- PRICE MOCK ----------------------------- */
+
 export const mockPrices: PricesResponse = {
   brent_usd: 82.14,
   wti_usd: 78.92,
@@ -105,27 +131,88 @@ export const mockPrices: PricesResponse = {
   source: "yfinance",
 };
 
+/* -------------------------- AGENT STATUS MOCK -------------------------- */
+
 export const mockAgentStatus: AgentsStatusResponse = {
   agents: {
-    agent_1: { status: "RUNNING", last_run: new Date().toISOString(), events_today: 47 },
-    agent_2: { status: "IDLE", last_run: new Date().toISOString(), queue_depth: 0 },
-    agent_3: { status: "IDLE", last_run: new Date().toISOString() },
-    agent_4: { status: "INACTIVE", note: "Activates in crisis mode only" },
-    agent_5: { status: "INACTIVE", note: "Activates in crisis mode only" },
-    agent_6: { status: "INACTIVE", note: "Activates in crisis mode only" },
-    agent_7: { status: "INACTIVE", note: "Activates in crisis mode only" },
-    agent_8: { status: "INACTIVE", note: "Activates in crisis mode only" },
+    agent_1: {
+      status: "RUNNING",
+      last_run: new Date().toISOString(),
+      events_today: 47,
+    },
+    agent_2: {
+      status: "IDLE",
+      last_run: new Date().toISOString(),
+      queue_depth: 0,
+    },
+    agent_3: {
+      status: "IDLE",
+      last_run: new Date().toISOString(),
+    },
+    agent_4: {
+      status: "INACTIVE",
+      note: "Activates in crisis mode only",
+    },
+    agent_5: {
+      status: "INACTIVE",
+      note: "Activates in crisis mode only",
+    },
+    agent_6: {
+      status: "INACTIVE",
+      note: "Activates in crisis mode only",
+    },
+    agent_7: {
+      status: "INACTIVE",
+      note: "Activates in crisis mode only",
+    },
+    agent_8: {
+      status: "INACTIVE",
+      note: "Activates in crisis mode only",
+    },
   },
-  redis_stream_depths: { "events:raw": 0, "events:verified": 0 },
-  crisis_mode_active: false,
+  redis_stream_depths: {
+    "events:raw": 0,
+    "events:verified": 0,
+  },
+    crisis_mode_active: false,   // ← add this
+    system_mode: "WATCH",
 };
+
+/* ----------------------------- VESSELS MOCK ---------------------------- */
 
 export const mockVessels: VesselsResponse = {
   vessels: [
-    { mmsi: "123456789", name: "VLCC PACIFIC STAR", vessel_type: "VLCC", latitude: 24.5, longitude: 58.2, speed_knots: 13.2, heading_degrees: 112, last_updated: new Date().toISOString() },
-    { mmsi: "987654321", name: "VLCC GULF EAGLE", vessel_type: "VLCC", latitude: 22.1, longitude: 61.4, speed_knots: 11.8, heading_degrees: 134, last_updated: new Date().toISOString() },
-    { mmsi: "456789123", name: "SUEZMAX INDIA SPIRIT", vessel_type: "Suezmax", latitude: 19.8, longitude: 65.7, speed_knots: 14.1, heading_degrees: 98, last_updated: new Date().toISOString() },
+    {
+      mmsi: "123456789",
+      name: "VLCC PACIFIC STAR",
+      vessel_type: "VLCC",
+      latitude: 24.5,
+      longitude: 58.2,
+      speed_knots: 13.2,
+      heading_degrees: 112,
+      last_updated: new Date().toISOString(),
+    },
+    {
+      mmsi: "987654321",
+      name: "VLCC GULF EAGLE",
+      vessel_type: "VLCC",
+      latitude: 22.1,
+      longitude: 61.4,
+      speed_knots: 11.8,
+      heading_degrees: 134,
+      last_updated: new Date().toISOString(),
+    },
+    {
+      mmsi: "456789123",
+      name: "SUEZMAX INDIA SPIRIT",
+      vessel_type: "Suezmax",
+      latitude: 19.8,
+      longitude: 65.7,
+      speed_knots: 14.1,
+      heading_degrees: 98,
+      last_updated: new Date().toISOString(),
+    },
   ],
   cache_age_seconds: 180,
-  source: "AISHub",
+  source: "static_demo",
 };

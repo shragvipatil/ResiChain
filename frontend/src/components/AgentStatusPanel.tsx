@@ -168,9 +168,9 @@ const AgentStatusPanel: React.FC = () => {
           <div className="ml-auto">
             <p className="text-slate-600 text-xs">
               Crisis mode:{" "}
-              <span className={agentStatus?.crisis_mode_active ? "text-red-400" : "text-green-400"}>
-                {agentStatus?.crisis_mode_active ? "ACTIVE" : "Inactive"}
-              </span>
+            <span className={agentStatus?.crisis_mode_active ? "text-red-400" : "text-green-400"}>
+              {agentStatus?.crisis_mode_active ? "ACTIVE" : "Inactive"}
+            </span>
             </p>
           </div>
         </div>

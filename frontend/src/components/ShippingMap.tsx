@@ -1,29 +1,12 @@
-/**
- * ShippingMap.tsx
- * Day 3 deliverable — Person C (Frontend)
- *
- * Static Leaflet map with:
- *   - 5 Indian port markers (click-to-show detail tooltip)
- *   - GeoJSON shipping lane overlays (Hormuz, Red Sea, Suez, Cape, Gulf of Aden)
- *   - Corridor risk colour-coding wired to CorridorRiskState (live data ready)
- *
- * Day 7 upgrade path:
- *   - Pass `vessels` prop (Vessel[]) → renders AISHub vessel markers automatically
- *   - Pass live `riskState` from WebSocket → lane colours update reactively
- *   - No structural changes needed; just feed the props.
- */
-
 import React, { useEffect, useRef, useState } from "react";
 import L, { Map, GeoJSON as LeafletGeoJSON } from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { CorridorRiskState, Vessel } from "../types";
 
-// ─── Fix Leaflet's broken default marker icon paths in CRA/webpack ───────────
 import markerIcon2x from "leaflet/dist/images/marker-icon-2x.png";
 import markerIcon from "leaflet/dist/images/marker-icon.png";
 import markerShadow from "leaflet/dist/images/marker-shadow.png";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 delete (L.Icon.Default.prototype as any)._getIconUrl;
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: markerIcon2x,
@@ -31,30 +14,23 @@ L.Icon.Default.mergeOptions({
   shadowUrl: markerShadow,
 });
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
 export interface IndianPort {
   id: string;
   name: string;
   city: string;
   lat: number;
   lng: number;
-  capacity_mbd: number;        // crude throughput in million barrels/day
-  primary_grades: string[];    // crude grades this refinery accepts
+  capacity_mbd: number;
+  primary_grades: string[];
   operator: string;
-  corridors: Array<keyof CorridorRiskState["corridors"]>;  // corridors it uses
+  corridors: Array<keyof CorridorRiskState["corridors"]>;
 }
 
 interface ShippingMapProps {
-  /** Live or mock corridor risk state — drives lane colour coding */
   riskState?: CorridorRiskState | null;
-  /** Day 7: pass AISHub vessel list to render vessel markers */
   vessels?: Vessel[];
-  /** Tailwind / inline height override — defaults to "500px" */
   height?: string;
 }
-
-// ─── Data: Five Indian Ports ──────────────────────────────────────────────────
 
 export const INDIAN_PORTS: IndianPort[] = [
   {
@@ -106,15 +82,13 @@ export const INDIAN_PORTS: IndianPort[] = [
     name: "Mangalore Refinery (MRPL)",
     city: "Mangalore, Karnataka",
     lat: 12.9141,
-    lng: 74.8560,
+    lng: 74.856,
     capacity_mbd: 0.3,
-    primary_grades: ["Basra Light", "Arab Light", "Murals"],
+    primary_grades: ["Basra Light", "Arab Light", "Murban"],
     operator: "MRPL (ONGC subsidiary)",
     corridors: ["Hormuz", "Red_Sea"],
   },
 ];
-
-// ─── Corridor colour logic ────────────────────────────────────────────────────
 
 const CORRIDOR_COLORS: Record<string, { low: string; mid: string; high: string }> = {
   Hormuz:  { low: "#22c55e", mid: "#f59e0b", high: "#ef4444" },
@@ -128,107 +102,92 @@ function corridorColour(
   corridorName: string,
   riskState?: CorridorRiskState | null
 ): string {
-  if (!riskState) return "#60a5fa"; // default blue when no data
-  const risk =
-    riskState.corridors[corridorName as keyof CorridorRiskState["corridors"]] ?? 0;
+  if (!riskState) return "#60a5fa";
+  const detail = riskState.corridors[corridorName as keyof CorridorRiskState["corridors"]];
+  const risk = detail?.risk_score ?? 0;
   const palette = CORRIDOR_COLORS[corridorName] ?? CORRIDOR_COLORS.Unknown;
   if (risk > 0.65) return palette.high;
-  if (risk > 0.30) return palette.mid;
+  if (risk > 0.3)  return palette.mid;
   return palette.low;
 }
 
-// ─── Custom SVG port icon ─────────────────────────────────────────────────────
-
 function createPortIcon(capacity: number): L.DivIcon {
-  // Scale icon slightly by capacity
   const size = capacity >= 0.8 ? 18 : capacity >= 0.3 ? 14 : 11;
   return L.divIcon({
     className: "",
     html: `
       <div style="
-        width:${size * 2}px; height:${size * 2}px;
+        width:${size * 2}px;height:${size * 2}px;
         background:#1e40af;
         border:2.5px solid #60a5fa;
         border-radius:50%;
-        display:flex; align-items:center; justify-content:center;
-        box-shadow: 0 0 0 3px rgba(96,165,250,0.25);
+        display:flex;align-items:center;justify-content:center;
+        box-shadow:0 0 0 3px rgba(96,165,250,0.25);
       ">
         <svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="white">
-          <path d="M12 2L8 8H4L2 10l10 12L22 10l-2-2h-4L12 2z" opacity="0.9"/>
+          <path d="M12 2L8 8H4L2 10l10 12L22 10l-2-2h-4L12 2z"/>
         </svg>
-      </div>`,
+      </div>
+    `,
     iconSize: [size * 2, size * 2],
     iconAnchor: [size, size],
-    popupAnchor: [0, -(size + 4)],
   });
 }
-
-// ─── Component ────────────────────────────────────────────────────────────────
 
 const ShippingMap: React.FC<ShippingMapProps> = ({
   riskState,
   vessels = [],
   height = "500px",
 }) => {
-  const mapContainerRef = useRef<HTMLDivElement>(null);
-  const mapRef = useRef<Map | null>(null);
-  const geoJsonLayerRef = useRef<LeafletGeoJSON | null>(null);
+  const mapContainerRef      = useRef<HTMLDivElement>(null);
+  const mapRef               = useRef<Map | null>(null);
+  const geoJsonLayerRef      = useRef<LeafletGeoJSON | null>(null);
+  const vesselLayerGroupRef  = useRef<L.LayerGroup | null>(null);
+
   const [selectedPort, setSelectedPort] = useState<IndianPort | null>(null);
 
-  // ── Initialise map (runs once) ──────────────────────────────────────────────
+  // ── Map initialisation (runs once) ──────────────────────────────────────────
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return;
 
     const map = L.map(mapContainerRef.current, {
-      center: [20, 65],       // centred on Arabian Sea / Indian Ocean
+      center: [20, 65],
       zoom: 4,
       minZoom: 2,
       maxZoom: 10,
-      zoomControl: true,
-      attributionControl: true,
     });
 
-    // Dark tile layer that matches the dashboard's slate theme
     L.tileLayer(
-      "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
-      {
-        attribution:
-          '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> contributors &copy; <a href="https://carto.com/">CARTO</a>',
-        subdomains: "abcd",
-        maxZoom: 19,
-      }
+      "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
     ).addTo(map);
 
     mapRef.current = map;
 
-    // Add port markers
+    // Create vessel layer group immediately — must exist before vessel effect runs
+    vesselLayerGroupRef.current = L.layerGroup().addTo(map);
+
+    // Port markers
     INDIAN_PORTS.forEach((port) => {
       const marker = L.marker([port.lat, port.lng], {
         icon: createPortIcon(port.capacity_mbd),
-        title: port.name,
       }).addTo(map);
 
-      marker.on("click", () => {
-        setSelectedPort(port);
-      });
-
-      // Minimal tooltip on hover (full detail panel is in the sidebar card)
+      marker.on("click", () => setSelectedPort(port));
       marker.bindTooltip(
-        `<div style="background:#0f172a;color:#e2e8f0;border:1px solid #334155;padding:6px 10px;border-radius:6px;font-size:12px;line-height:1.5">
-          <strong style="color:#60a5fa">${port.name}</strong><br/>
-          ${port.city}<br/>
-          <span style="color:#94a3b8">Capacity: ${port.capacity_mbd} Mb/d</span>
-        </div>`,
-        { permanent: false, direction: "top", opacity: 1, className: "leaflet-tooltip-custom" }
+        `<div style="background:#0f172a;color:#e2e8f0;padding:6px 10px;border-radius:6px">
+          <strong>${port.name}</strong><br/>
+          ${port.city}
+        </div>`
       );
     });
 
-    // Load and render GeoJSON shipping lanes
+    // GeoJSON shipping lanes — guarded so async callback can't fire after unmount
+    let destroyed = false;
+
     fetch("/geojson/shipping_lanes.json")
       .then((r) => r.json())
       .then((geojson) => {
-        if (!mapRef.current) return;
-
+        if (destroyed) return;
         const layer = L.geoJSON(geojson, {
           style: (feature) => {
             const corridor = feature?.properties?.corridor ?? "Unknown";
@@ -236,37 +195,24 @@ const ShippingMap: React.FC<ShippingMapProps> = ({
               color: corridorColour(corridor, riskState),
               weight: corridor === "Cape" ? 2 : 3,
               opacity: 0.8,
-              dashArray: corridor === "Cape" ? "8 5" : undefined,
             };
           },
-          onEachFeature: (feature, layer) => {
-            const p = feature.properties;
-            layer.bindTooltip(
-              `<div style="background:#0f172a;color:#e2e8f0;border:1px solid #334155;padding:6px 10px;border-radius:6px;font-size:12px">
-                <strong style="color:#60a5fa">${p.name}</strong><br/>
-                ${p.description}<br/>
-                <span style="color:#94a3b8">Flow: ~${p.daily_barrels_mbd} Mb/d</span>
-              </div>`,
-              { sticky: true, opacity: 1, className: "leaflet-tooltip-custom" }
-            );
-          },
-        }).addTo(mapRef.current);
-
+        }).addTo(map);
         geoJsonLayerRef.current = layer;
       })
-      .catch((err) => {
-        console.error("Failed to load shipping lanes GeoJSON:", err);
+      .catch(() => {
+        // GeoJSON file missing — map still works without lanes
       });
 
     return () => {
+      destroyed = true;
       map.remove();
       mapRef.current = null;
+      vesselLayerGroupRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // intentionally empty — map init runs once
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Reactively update lane colours when riskState changes ──────────────────
-  // Day 7: this same block will re-run every time the WebSocket pushes RISK_STATE_UPDATED
+  // ── Risk colour update (runs when riskState changes) ────────────────────────
   useEffect(() => {
     if (!geoJsonLayerRef.current || !riskState) return;
     geoJsonLayerRef.current.setStyle((feature) => {
@@ -275,131 +221,64 @@ const ShippingMap: React.FC<ShippingMapProps> = ({
         color: corridorColour(corridor, riskState),
         weight: corridor === "Cape" ? 2 : 3,
         opacity: 0.8,
-        dashArray: corridor === "Cape" ? "8 5" : undefined,
       };
     });
   }, [riskState]);
 
-  // ── Day 7: render AIS vessel markers ──────────────────────────────────────
-  // When `vessels` prop is fed live data, this effect drops markers onto the map.
-  const vesselLayerGroupRef = useRef<L.LayerGroup | null>(null);
+  // ── Vessel markers (runs when vessels array changes) ────────────────────────
   useEffect(() => {
-    if (!mapRef.current) return;
-    if (vesselLayerGroupRef.current) {
-      vesselLayerGroupRef.current.clearLayers();
-    } else {
-      vesselLayerGroupRef.current = L.layerGroup().addTo(mapRef.current);
-    }
+    if (!mapRef.current || !vesselLayerGroupRef.current) return;
+
+    vesselLayerGroupRef.current.clearLayers();
 
     vessels.forEach((v) => {
       const icon = L.divIcon({
         className: "",
-        html: `<div style="
-          width:10px;height:10px;
-          background:#f59e0b;border:1.5px solid #fde68a;
-          border-radius:2px;
-          transform:rotate(${v.heading_degrees}deg);
-        "></div>`,
-        iconSize: [10, 10],
-        iconAnchor: [5, 5],
+        html: `<div style="width:10px;height:10px;background:#f59e0b;border-radius:2px"></div>`,
       });
-      const m = L.marker([v.latitude, v.longitude], { icon });
-      m.bindTooltip(
-        `<div style="background:#0f172a;color:#e2e8f0;border:1px solid #334155;padding:6px 10px;border-radius:6px;font-size:11px">
-          <strong style="color:#fbbf24">${v.name}</strong><br/>
-          Type: ${v.vessel_type} | Speed: ${v.speed_knots} kn
-        </div>`,
-        { sticky: true, opacity: 1, className: "leaflet-tooltip-custom" }
-      );
-      vesselLayerGroupRef.current?.addLayer(m);
+      const marker = L.marker([v.latitude, v.longitude], { icon });
+      vesselLayerGroupRef.current?.addLayer(marker);
     });
   }, [vessels]);
 
-  // ─── Render ─────────────────────────────────────────────────────────────────
+  // ── Render ───────────────────────────────────────────────────────────────────
   return (
     <div className="relative w-full" style={{ height }}>
-      {/* Map container */}
-      <div ref={mapContainerRef} className="w-full h-full rounded-xl overflow-hidden" />
+      <div ref={mapContainerRef} className="w-full h-full rounded-xl" />
 
-      {/* Port detail panel — appears when a port marker is clicked */}
       {selectedPort && (
-        <div
-          className="absolute top-3 right-3 z-[1000] w-72 bg-slate-900 border border-slate-700 rounded-xl p-4 shadow-xl"
-          style={{ pointerEvents: "all" }}
-        >
-          {/* Header */}
-          <div className="flex items-start justify-between mb-3">
-            <div>
-              <p className="text-white font-medium text-sm leading-tight">
-                {selectedPort.name}
-              </p>
-              <p className="text-slate-400 text-xs mt-0.5">{selectedPort.city}</p>
-            </div>
-            <button
-              onClick={() => setSelectedPort(null)}
-              className="text-slate-500 hover:text-white text-lg leading-none ml-2 mt-0.5"
-              aria-label="Close"
-            >
-              ×
-            </button>
-          </div>
-
-          {/* Stats */}
-          <div className="grid grid-cols-2 gap-2 mb-3">
-            <div className="bg-slate-800 rounded-lg p-2">
-              <p className="text-slate-500 text-xs">Capacity</p>
-              <p className="text-blue-400 font-medium text-sm">
-                {selectedPort.capacity_mbd} Mb/d
-              </p>
-            </div>
-            <div className="bg-slate-800 rounded-lg p-2">
-              <p className="text-slate-500 text-xs">Operator</p>
-              <p className="text-slate-300 font-medium text-xs leading-tight">
-                {selectedPort.operator}
-              </p>
-            </div>
-          </div>
-
-          {/* Crude grades */}
-          <div className="mb-3">
-            <p className="text-slate-500 text-xs mb-1.5">Accepted Crude Grades</p>
-            <div className="flex flex-wrap gap-1">
-              {selectedPort.primary_grades.map((g) => (
+        <div className="absolute top-3 right-3 z-[1000] bg-slate-900 p-4 rounded-xl border border-slate-700">
+          <button
+            onClick={() => setSelectedPort(null)}
+            className="absolute top-2 right-2 text-slate-500 hover:text-white text-xs"
+          >
+            ✕
+          </button>
+          <p className="text-white font-medium">{selectedPort.name}</p>
+          <p className="text-slate-400 text-xs">{selectedPort.city}</p>
+          <p className="text-slate-500 text-xs mt-1">{selectedPort.operator}</p>
+          <div className="mt-2 text-xs text-slate-400">
+            <p className="text-slate-500 mb-1">Corridors</p>
+            {selectedPort.corridors.map((c) => {
+              const risk = riskState?.corridors[c]?.risk_score ?? null;
+              const colorClass =
+                risk === null
+                  ? "text-slate-400 border-slate-700"
+                  : risk > 0.65
+                  ? "text-red-400 border-red-800"
+                  : risk > 0.3
+                  ? "text-amber-400 border-amber-800"
+                  : "text-green-400 border-green-800";
+              return (
                 <span
-                  key={g}
-                  className="text-xs bg-slate-800 text-slate-300 px-2 py-0.5 rounded-full border border-slate-700"
+                  key={c}
+                  className={`inline-block text-xs px-2 py-0.5 rounded-full border bg-slate-800 mr-1 ${colorClass}`}
                 >
-                  {g}
+                  {c.replace("_", " ")}
+                  {risk !== null && ` ${(risk * 100).toFixed(0)}%`}
                 </span>
-              ))}
-            </div>
-          </div>
-
-          {/* Corridors with live risk colour */}
-          <div>
-            <p className="text-slate-500 text-xs mb-1.5">Supply Corridors</p>
-            <div className="flex flex-wrap gap-1">
-              {selectedPort.corridors.map((c) => {
-                const risk = riskState?.corridors[c] ?? null;
-                const colorClass =
-                  risk === null
-                    ? "text-slate-400 border-slate-700"
-                    : risk > 0.65
-                    ? "text-red-400 border-red-800"
-                    : risk > 0.3
-                    ? "text-amber-400 border-amber-800"
-                    : "text-green-400 border-green-800";
-                return (
-                  <span
-                    key={c}
-                    className={`text-xs px-2 py-0.5 rounded-full border bg-slate-800 ${colorClass}`}
-                  >
-                    {c.replace("_", " ")}
-                    {risk !== null && ` ${(risk * 100).toFixed(0)}%`}
-                  </span>
-                );
-              })}
-            </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -420,14 +299,10 @@ const ShippingMap: React.FC<ShippingMapProps> = ({
             <div className="w-6 h-0.5 bg-red-500" />
             <span className="text-slate-400">Critical (&gt;65%)</span>
           </div>
-          <div className="flex items-center gap-2 mt-1">
-            <div className="w-6 h-0.5 bg-blue-400" style={{ borderTop: "2px dashed #60a5fa", height: 0 }} />
-            <span className="text-slate-400">Cape (fallback)</span>
-          </div>
           {vessels.length > 0 && (
             <div className="flex items-center gap-2">
               <div className="w-2.5 h-2.5 bg-amber-400 rounded-sm" />
-              <span className="text-slate-400">AIS Vessel</span>
+              <span className="text-slate-400">Vessel</span>
             </div>
           )}
         </div>

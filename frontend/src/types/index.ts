@@ -1,30 +1,39 @@
-export interface CorridorRiskState {
-  corridors: {
-    Hormuz: number;
-    Red_Sea: number;
-    Suez: number;
-    Cape: number;
-  };
-  confidence: {
-    Hormuz: number;
-    Red_Sea: number;
-    Suez: number;
-    Cape: number;
-  };
-  delta_from_baseline: {
-    Hormuz: number;
-    Red_Sea: number;
-    Suez: number;
-    Cape: number;
-  };
-  updated_at: string;
-  crisis_mode_active: boolean;
+export interface CorridorDetail {
+  risk_score: number;
+  status: "NORMAL" | "WATCH" | "CRISIS";
+  trend: "stable" | "rising" | "falling";
 }
 
-export type SourceName = "GDELT" | "UKMTO" | "OFAC" | "RELIEFWEB" | "ALPHA_VANTAGE";
-export type CorridorName = "Hormuz" | "Red_Sea" | "Suez" | "Cape" | "Unknown";
+export interface CorridorRiskState {
+  corridors: {
+    Hormuz: CorridorDetail;
+    Red_Sea: CorridorDetail;
+    Suez: CorridorDetail;
+    Cape: CorridorDetail;
+  };
+  compound_risk: number;
+  last_updated: string;
+  system_mode: "NORMAL" | "WATCH" | "CRISIS";
+}
+
+export type SourceName =
+  | "GDELT"
+  | "UKMTO"
+  | "OFAC"
+  | "RELIEFWEB"
+  | "ALPHA_VANTAGE";
+
+export type CorridorName =
+  | "Hormuz"
+  | "Red_Sea"
+  | "Suez"
+  | "Cape"
+  | "Unknown";
+
 export type EventStage = "WATCH" | "CONFIRMED";
+
 export type OptionStatus = "APPROVED" | "BLOCKED" | "PARTIAL";
+
 export type AgentStatus = "RUNNING" | "IDLE" | "INACTIVE" | "ERROR";
 
 export interface VerifiedEvent {
@@ -111,9 +120,9 @@ export interface AgentsStatusResponse {
     "events:raw": number;
     "events:verified": number;
   };
-  crisis_mode_active: boolean;
+  crisis_mode_active: boolean;        // ← add this back
+  system_mode: "NORMAL" | "WATCH" | "CRISIS";
 }
-
 export type WebSocketEventType =
   | "RISK_STATE_UPDATED"
   | "WATCH_ALERT"
