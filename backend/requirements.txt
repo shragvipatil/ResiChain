@@ -2,7 +2,7 @@
 fastapi
 uvicorn[standard]
 python-multipart
-
+pytest
 # Database Connections
 asyncpg
 sqlalchemy

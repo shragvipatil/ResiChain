@@ -20,7 +20,6 @@ from contracts.api_contracts import (
 
 router = APIRouter(prefix="/api", tags=["API"])
 
-# ---- In-memory state for mock approvals -----------------
 _playbooks = {"pb_001": copy.deepcopy(MOCK_PLAYBOOK)}
 _risk_weights = {
     "military_incidents": 0.35,
@@ -30,7 +29,7 @@ _risk_weights = {
     "seasonal_risk": 0.05
 }
 
-# ---- JWT Middleware Skeleton -----------------------------
+
 def validate_token_format(authorization: Optional[str]) -> bool:
     if not authorization:
         return False
@@ -39,7 +38,7 @@ def validate_token_format(authorization: Optional[str]) -> bool:
         return False
     return True
 
-# ---- Helper functions (module level) --------------------
+
 def _risk_to_status(score: float) -> str:
     if score >= 0.65:
         return "CRISIS"
@@ -51,8 +50,7 @@ def _risk_to_status(score: float) -> str:
 def _get_system_mode(risk_data: dict) -> str:
     scores = [
         v for k, v in risk_data.items()
-        if isinstance(v, (int, float))
-        and k not in ["updated_at"]
+        if isinstance(v, (int, float)) and k not in ["updated_at"]
     ]
     if not scores:
         return "NORMAL"
@@ -63,18 +61,9 @@ def _get_system_mode(risk_data: dict) -> str:
         return "WATCH"
     return "NORMAL"
 
-# =========================================================
-# ENDPOINTS
-# =========================================================
 
-# GET /api/risk-state
 @router.get("/risk-state")
 async def get_risk_state():
-    """
-    Returns LIVE corridor risk scores from Redis.
-    Falls back to mock data if Redis cache expired.
-    Used by: Ministry dashboard risk cards, map overlay
-    """
     from db.redis_client import get_redis
     import json
 
@@ -103,39 +92,24 @@ async def get_risk_state():
     return MOCK_RISK_STATE
 
 
-# GET /api/events
 @router.get("/events")
 async def get_events(limit: int = 10, corridor: Optional[str] = None):
-    """
-    Returns recent verified events from Agent 1.
-    Used by: Events feed on all dashboards
-    """
     events = MOCK_EVENTS
     if corridor:
         events = [e for e in events if e["corridor"] == corridor]
     return {"events": events[:limit], "total": len(events)}
 
 
-# GET /api/procurement/options
 @router.get("/procurement/options")
 async def get_procurement_options(status: Optional[str] = None):
-    """
-    Returns procurement alternatives evaluated by Agent 6.
-    Used by: Procurement Analyst dashboard
-    """
     options = MOCK_PROCUREMENT_OPTIONS
     if status:
         options = [o for o in options if o["status"] == status]
     return {"options": options, "total": len(options)}
 
 
-# GET /api/playbook/{id}
 @router.get("/playbook/{playbook_id}")
 async def get_playbook(playbook_id: str):
-    """
-    Returns full crisis playbook by ID.
-    Used by: All role dashboards during crisis
-    """
     playbook = _playbooks.get(playbook_id)
     if not playbook:
         raise HTTPException(
@@ -145,18 +119,12 @@ async def get_playbook(playbook_id: str):
     return playbook
 
 
-# PATCH /api/playbook/{id}/approve
 @router.patch("/playbook/{playbook_id}/approve")
 async def approve_playbook_action(
     playbook_id: str,
     body: dict,
     authorization: Optional[str] = Header(None)
 ):
-    """
-    Analyst approves or rejects a procurement recommendation.
-    Body: {"action_id": "proc_001", "decision": "approved", "note": "optional"}
-    Used by: Procurement Analyst dashboard
-    """
     playbook = _playbooks.get(playbook_id)
     if not playbook:
         raise HTTPException(status_code=404, detail="Playbook not found")
@@ -188,15 +156,8 @@ async def approve_playbook_action(
     }
 
 
-# PATCH /api/risk-weights
 @router.patch("/risk-weights")
 async def update_risk_weights(body: dict):
-    """
-    Updates risk factor weights and immediately recalculates
-    risk vector with new weights.
-    Body: {"military_incidents": 0.4, "conflict_escalation": 0.2, ...}
-    Used by: Admin dashboard weight sliders
-    """
     total = sum(body.values())
     if abs(total - 1.0) > 0.01:
         raise HTTPException(
@@ -214,29 +175,19 @@ async def update_risk_weights(body: dict):
     }
 
 
-# GET /api/agents/status
 @router.get("/agents/status")
 async def get_agents_status():
-    """
-    Returns last run time and status for all 8 agents.
-    Reads real data from Redis where available.
-    Falls back to mock data for agents not yet built.
-    Used by: Admin dashboard, Ministry agent status panel
-    """
     from db.redis_client import get_redis
     import json
 
     r = await get_redis()
 
-    # Read real run data from Redis for built agents
     agent1_data = await r.get("agent1:last_run")
     agent3_data = await r.get("agent3:last_run")
 
-    # Parse real data if available
     agent1_info = json.loads(agent1_data) if agent1_data else None
     agent3_info = json.loads(agent3_data) if agent3_data else None
 
-    # Get Redis stream depths
     try:
         raw_stream_len = await r.xlen("events:raw")
         verified_stream_len = await r.xlen("events:verified")
@@ -268,41 +219,11 @@ async def get_agents_status():
             "queue_depth": 0,
             "mode": "RUNNING" if agent3_info else "STANDBY"
         },
-        {
-            "agent": "Agent4_Compound",
-            "status": "standby",
-            "last_run": None,
-            "queue_depth": 0,
-            "mode": "STANDBY"
-        },
-        {
-            "agent": "Agent5_SPR",
-            "status": "standby",
-            "last_run": None,
-            "queue_depth": 0,
-            "mode": "STANDBY"
-        },
-        {
-            "agent": "Agent6_Procurement",
-            "status": "standby",
-            "last_run": None,
-            "queue_depth": 0,
-            "mode": "STANDBY"
-        },
-        {
-            "agent": "Agent7_Validator",
-            "status": "standby",
-            "last_run": None,
-            "queue_depth": 0,
-            "mode": "STANDBY"
-        },
-        {
-            "agent": "Agent8_Playbook",
-            "status": "standby",
-            "last_run": None,
-            "queue_depth": 0,
-            "mode": "STANDBY"
-        }
+        {"agent": "Agent4_Compound", "status": "standby", "last_run": None, "queue_depth": 0, "mode": "STANDBY"},
+        {"agent": "Agent5_SPR", "status": "standby", "last_run": None, "queue_depth": 0, "mode": "STANDBY"},
+        {"agent": "Agent6_Procurement", "status": "standby", "last_run": None, "queue_depth": 0, "mode": "STANDBY"},
+        {"agent": "Agent7_Validator", "status": "standby", "last_run": None, "queue_depth": 0, "mode": "STANDBY"},
+        {"agent": "Agent8_Playbook", "status": "standby", "last_run": None, "queue_depth": 0, "mode": "STANDBY"}
     ]
 
     return {
@@ -315,15 +236,8 @@ async def get_agents_status():
     }
 
 
-# GET /api/map/vessels
 @router.get("/map/vessels")
 async def get_vessels():
-    """
-    Returns tanker positions for map display.
-    Reads from Redis cache if available.
-    Falls back to hardcoded mock positions for demo.
-    Used by: Map component on all dashboards
-    """
     from db.redis_client import get_redis
     import json
 
@@ -336,27 +250,16 @@ async def get_vessels():
     except Exception:
         pass
 
-    # Fallback to hardcoded mock for demo
-    return {"vessels": MOCK_VESSELS, "source": "mock"} 
+    return {"vessels": MOCK_VESSELS, "source": "mock"}
 
 
-# GET /api/kgraph
 @router.get("/kgraph")
 async def get_knowledge_graph():
-    """
-    Returns Knowledge Graph nodes and edges for D3 visualization.
-    Used by: Knowledge Graph panel on Ministry dashboard
-    """
     return MOCK_KGRAPH
 
 
-# GET /api/spr/status
 @router.get("/spr/status")
 async def get_spr_status():
-    """
-    Returns current SPR levels and drawdown schedule.
-    Used by: Ministry dashboard SPR card
-    """
     return {
         "total_capacity_mb": 43.9,
         "current_level_mb": 38.0,
@@ -369,17 +272,8 @@ async def get_spr_status():
     }
 
 
-# POST /api/demo/inject-crisis
 @router.post("/demo/inject-crisis")
-async def inject_demo_crisis(
-    corridor: str = "Hormuz",
-    severity: int = 8
-):
-    """
-    DEMO ONLY endpoint.
-    Injects a fake crisis event to trigger the full agent pipeline.
-    Called at Minute 2 of the live demo.
-    """
+async def inject_demo_crisis(corridor: str = "Hormuz", severity: int = 8):
     from agents.agent1_ingestion import run_agent1_demo_inject
     import asyncio
     asyncio.create_task(run_agent1_demo_inject(corridor, severity))
@@ -390,13 +284,8 @@ async def inject_demo_crisis(
     }
 
 
-# GET /api/debug/corridor-state
 @router.get("/debug/corridor-state")
 async def get_corridor_state():
-    """
-    Debug endpoint — shows current verification state.
-    Use this to confirm events are flowing through the pipeline.
-    """
     from agents.agent1_verification import _active_corridor_events
     from datetime import datetime
 
@@ -405,12 +294,9 @@ async def get_corridor_state():
         state[corridor] = {
             "event_count": len(events),
             "sources": list(set(e["source"] for e in events)),
-            "max_severity": max(
-                (e["severity"] for e in events), default=0
-            ),
+            "max_severity": max((e["severity"] for e in events), default=0),
             "latest_event": max(
-                (e["event_time"].isoformat() for e in events),
-                default=None
+                (e["event_time"].isoformat() for e in events), default=None
             )
         }
 
@@ -423,49 +309,18 @@ async def get_corridor_state():
     }
 
 
-# GET /api/debug/verified-events
 @router.get("/debug/verified-events")
-async def get_verified_events(limit: int = 10):
-    """
-    Shows recent verified events from PostgreSQL.
-    Use this to confirm WATCH/CONFIRMED events are being written.
-    """
-    from db.postgres import get_db_pool
-    pool = await get_db_pool()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT corridor, stage, confidence,
-                   sources_confirming, max_severity, created_at
-            FROM verified_events
-            ORDER BY created_at DESC
-            LIMIT $1
-        """, limit)
-
+async def get_verified_events_debug(limit: int = 10):
+    from db.postgres_queries import get_verified_events
+    rows = get_verified_events(limit=limit, offset=0)
     return {
-        "verified_events": [dict(row) for row in rows],
+        "verified_events": rows,
         "total": len(rows)
-    } 
+    }
 
 
-# POST /api/debug/broadcast-test
-# Tests WebSocket broadcast to all connected clients
 @router.post("/debug/broadcast-test")
 async def test_broadcast(body: dict):
-    """
-    Manually triggers a WebSocket broadcast to all connected clients.
-    Use this to test the WebSocket connection from the frontend.
-
-    Body: {"type": "risk_update", "data": {"Hormuz": 0.82}}
-
-    To test:
-    1. Open http://localhost:8000/docs in one tab
-    2. Open browser console in another tab
-    3. Run this in console:
-       const ws = new WebSocket('ws://localhost:8000/ws/agent-status')
-       ws.onmessage = (e) => console.log(JSON.parse(e.data))
-    4. Execute this endpoint
-    5. Should see the message appear in console
-    """
     from main import broadcast_to_dashboard
 
     message_type = body.get("type", "test")
@@ -477,4 +332,4 @@ async def test_broadcast(body: dict):
         "message": "Broadcast sent to all connected WebSocket clients",
         "type": message_type,
         "data": data
-    } 
+    }

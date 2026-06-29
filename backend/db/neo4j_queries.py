@@ -2,12 +2,12 @@ import os
 from dotenv import load_dotenv
 from neo4j import GraphDatabase
 
-
 load_dotenv()
 
 uri = os.getenv("NEO4J_URI")
 user = os.getenv("NEO4J_USER")
 password = os.getenv("NEO4J_PASSWORD")
+NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "neo4j")
 
 if not uri or not user or not password:
     raise ValueError("Missing Neo4j Aura credentials in environment variables.")
@@ -38,7 +38,7 @@ def get_surviving_routes(blocked_chokepoints: list[str]) -> list[dict]:
            p.name AS arrival_port
     ORDER BY supplier, route
     """
-    with driver.session() as session:
+    with driver.session(database=NEO4J_DATABASE) as session:
         result = session.run(query, blocked_chokepoints=blocked_chokepoints)
         return [dict(record) for record in result]
 
@@ -49,7 +49,7 @@ def check_grade_compatibility(grade_name: str, refinery_name: str) -> bool:
     OPTIONAL MATCH (g)-[rel:COMPATIBLE_WITH]->(r)
     RETURN rel IS NOT NULL AS compatible
     """
-    with driver.session() as session:
+    with driver.session(database=NEO4J_DATABASE) as session:
         record = session.run(
             query,
             grade_name=grade_name,
@@ -63,7 +63,7 @@ def get_supplier_current_share(supplier_name: str) -> float:
     MATCH (s:Supplier {name: $supplier_name})
     RETURN s.import_share_pct AS share
     """
-    with driver.session() as session:
+    with driver.session(database=NEO4J_DATABASE) as session:
         record = session.run(query, supplier_name=supplier_name).single()
         if not record or record["share"] is None:
             return 0.0
@@ -79,7 +79,7 @@ def get_contract_headroom(supplier_name: str) -> dict:
            c.current_volume_mbd AS current_volume_mbd
     LIMIT 1
     """
-    with driver.session() as session:
+    with driver.session(database=NEO4J_DATABASE) as session:
         record = session.run(query, supplier_name=supplier_name).single()
         if not record:
             return {
@@ -113,7 +113,7 @@ def get_all_supplier_grades() -> list[dict]:
            g.viscosity AS viscosity
     ORDER BY supplier, grade
     """
-    with driver.session() as session:
+    with driver.session(database=NEO4J_DATABASE) as session:
         result = session.run(query)
         return [dict(record) for record in result]
 
@@ -133,7 +133,7 @@ def get_refinery_specs(refinery_name: str) -> dict:
            collect(DISTINCT p.name) AS ports,
            collect(DISTINCT sf.name) AS spr_sites
     """
-    with driver.session() as session:
+    with driver.session(database=NEO4J_DATABASE) as session:
         record = session.run(query, refinery_name=refinery_name).single()
         if not record:
             return {}
@@ -165,7 +165,7 @@ def get_graph_for_visualization() -> dict:
            elementId(b) AS target,
            properties(r) AS properties
     """
-    with driver.session() as session:
+    with driver.session(database=NEO4J_DATABASE) as session:
         nodes = [dict(record) for record in session.run(node_query)]
         edges = [dict(record) for record in session.run(edge_query)]
         return {"nodes": nodes, "edges": edges}
@@ -176,7 +176,7 @@ def get_spr_total_volume() -> float:
     MATCH (s:StorageFacility)
     RETURN sum(s.capacity_mb) AS total_capacity
     """
-    with driver.session() as session:
+    with driver.session(database=NEO4J_DATABASE) as session:
         record = session.run(query).single()
         return float(record["total_capacity"] or 0.0) if record else 0.0
 
@@ -186,7 +186,7 @@ def get_compatible_share(refinery_name: str) -> float:
     MATCH (r:Refinery {name: $refinery_name})
     RETURN r.compatible_share AS compatible_share
     """
-    with driver.session() as session:
+    with driver.session(database=NEO4J_DATABASE) as session:
         record = session.run(query, refinery_name=refinery_name).single()
         return float(record["compatible_share"] or 0.0) if record else 0.0
 
@@ -199,7 +199,7 @@ def get_all_chokepoints() -> list[dict]:
            c.current_risk AS current_risk
     ORDER BY c.name
     """
-    with driver.session() as session:
+    with driver.session(database=NEO4J_DATABASE) as session:
         result = session.run(query)
         return [dict(record) for record in result]
 
@@ -213,7 +213,7 @@ def get_port_specs(port_name: str) -> dict:
            p.latitude AS latitude,
            p.longitude AS longitude
     """
-    with driver.session() as session:
+    with driver.session(database=NEO4J_DATABASE) as session:
         record = session.run(query, port_name=port_name).single()
         return dict(record) if record else {}
 
@@ -227,6 +227,6 @@ def get_sanctioned_suppliers() -> list[dict]:
            sn.scope AS scope
     ORDER BY s.name
     """
-    with driver.session() as session:
+    with driver.session(database=NEO4J_DATABASE) as session:
         result = session.run(query)
         return [dict(record) for record in result]

@@ -134,7 +134,7 @@ def init_db():
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS ofac_sdn (
                     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    entity_name TEXT NOT NULL,
+                    entity_name TEXT NOT NULL UNIQUE,
                     aliases TEXT,
                     program TEXT,
                     date_imposed DATE,
@@ -337,16 +337,17 @@ def insert_playbook(signal_detected_at,
         )
         RETURNING id
     """
+
     params = {
-        "signal_detected_at": signal_detected_at,
-        "playbook_generated_at": playbook_generated_at,
-        "signal_to_playbook_seconds": signal_to_playbook_seconds,
-        "status": status,
-        "ministry_view": ministry_view,
-        "procurement_view": procurement_view,
-        "refinery_view": refinery_view,
-        "confidence": confidence,
-        "inputs": inputs,
+    "signal_detected_at": signal_detected_at,
+    "playbook_generated_at": playbook_generated_at,
+    "signal_to_playbook_seconds": signal_to_playbook_seconds,
+    "status": status,
+    "ministry_view": Jsonb(ministry_view),
+    "procurement_view": Jsonb(procurement_view),
+    "refinery_view": Jsonb(refinery_view),
+    "confidence": confidence,
+    "inputs": Jsonb(inputs),
     }
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -433,7 +434,7 @@ def insert_procurement_evaluation(playbook_id: Optional[UUID],
         "grade": grade,
         "status": status,
         "rule_triggered": rule_triggered,
-        "reason": reason,
+        "reason": Jsonb(reason),
         "confidence": confidence,
     }
     with get_connection() as conn:
@@ -480,7 +481,7 @@ def insert_spr_schedule(playbook_id: Optional[UUID],
     params = {
         "playbook_id": playbook_id,
         "feasible": feasible,
-        "daily_drawdown_schedule": daily_drawdown_schedule,
+        "daily_drawdown_schedule": Jsonb(daily_drawdown_schedule),
         "confidence": confidence,
         "spr_remaining_mb": spr_remaining_mb,
         "infeasibility_warning": infeasibility_warning,
