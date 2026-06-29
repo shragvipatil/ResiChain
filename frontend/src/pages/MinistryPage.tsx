@@ -14,6 +14,7 @@ import { Vessel } from "../types";
 import ShippingMap from "../components/ShippingMap";
 import AgentStatusPanel from "../components/AgentStatusPanel";
 import RiskWeightSliders from "../components/RiskWeightSliders";
+import KnowledgeGraph from "../components/KnowledgeGraph";
 
 const VESSEL_POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -119,6 +120,20 @@ const MinistryPage: React.FC = () => {
       {/* Risk weight sliders */}
       <div className="mb-6">
         <RiskWeightSliders />
+      </div>
+
+      {/* Knowledge Graph — Fix 14: replaces Neo4j Browser dependency */}
+      {/*
+        Per CLAUDE.md demo advice: open this full-screen first.
+        "The visual communicates more in 10 seconds than a minute of description."
+        blockedChokepoints prop: pass ["Hormuz","Red Sea"] during compound demo
+        to grey out blocked edges and pulse the red nodes.
+      */}
+      <div className="mb-6">
+        <KnowledgeGraph
+          blockedChokepoints={compoundDisruptionDetected ? ["Hormuz", "Red Sea"] : []}
+          height="480px"
+        />
       </div>
 
       {/* Status bar */}

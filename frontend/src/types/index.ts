@@ -186,3 +186,29 @@ export interface ApprovePlaybookResponse {
   status:      PlaybookStatus;
   updated_at:  string;
 }
+// ── Knowledge Graph types (Day 9) ─────────────────────────────────────────────
+
+export type KNodeType = "Supplier" | "CrudeGrade" | "Route" | "Chokepoint" | "Refinery";
+
+export interface KNode {
+  id:       string;
+  label:    string;
+  type:     KNodeType;
+  // Optional properties shown in detail panel
+  share?:   number;   // Supplier: import share %
+  risk?:    number;   // Chokepoint: current risk score 0–1
+  capacity?:number;   // Refinery: Mb/d
+  gravity?: number;   // CrudeGrade: API gravity
+  [key: string]: unknown;
+}
+
+export interface KEdge {
+  from:   string;
+  to:     string;
+  label:  string;      // SHIPS_VIA, PRODUCES, COMPATIBLE_WITH, etc.
+}
+
+export interface KGraphData {
+  nodes: KNode[];
+  edges: KEdge[];
+}
