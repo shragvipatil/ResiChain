@@ -68,7 +68,7 @@ async def fetch_brent_price_alert() -> dict:
             event = {
                 "source": "AlphaVantage_PriceAlert",
                 "headline": f"Brent crude price {direction}: {pct_change*100:.1f}% move detected",
-                "corridor": "Hormuz",
+                "corridor": "Global", 
                 "severity": 7 if abs(pct_change) > 0.10 else 5,
                 "price_current": current_price,
                 "price_previous": previous_price,

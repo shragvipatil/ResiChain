@@ -159,4 +159,38 @@ async def init_db():
             )
         """) 
 
+        # ---- Price History Table ----------------------------
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS price_history (
+                id SERIAL PRIMARY KEY,
+                recorded_at TIMESTAMPTZ DEFAULT NOW(),
+                commodity TEXT NOT NULL,
+                price_usd FLOAT NOT NULL,
+                change_pct FLOAT,
+                source TEXT,
+                date_str TEXT
+            )
+        """)
+
+        # ---- SPR Schedules Table ----------------------------
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS spr_schedules (
+                id SERIAL PRIMARY KEY,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                scenario_id TEXT,
+                status TEXT,
+                confidence FLOAT,
+                critical_warning TEXT,
+                daily_drawdown_mbd FLOAT,
+                duration_days INTEGER,
+                total_release_mb FLOAT,
+                spr_start_mb FLOAT,
+                daily_consumption_mbd FLOAT,
+                import_gap_mbd FLOAT,
+                spot_premium_pct FLOAT,
+                schedule_json JSONB,
+                input_params JSONB
+            )
+        """) 
+
     logger.info("All PostgreSQL tables created/verified") 

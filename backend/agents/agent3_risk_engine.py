@@ -376,7 +376,7 @@ async def _emit_risk_update(risk_vector: dict):
     """
     try:
         from main import broadcast_to_dashboard
-        await broadcast_to_dashboard("risk_update", {
+        await broadcast_to_dashboard("RISK_STATE_UPDATED", {
             "corridors": {
                 k: v for k, v in risk_vector.items()
                 if k not in ["updated_at", "updated_corridors"]

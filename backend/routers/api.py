@@ -1,12 +1,12 @@
 # ============================================================
 # ResiChain — Main API Router
-# All endpoints return mock data for now
-# Person C builds against these exact shapes
+# All fixes applied (Fix 2, 3, 5 from analysis)
 # ============================================================
 
 from fastapi import APIRouter, HTTPException, Header
 from typing import Optional
 import copy
+import datetime
 
 from contracts.api_contracts import (
     MOCK_RISK_STATE,
@@ -73,7 +73,6 @@ async def get_risk_state():
     """
     Returns LIVE corridor risk scores from Redis.
     Falls back to mock data if Redis cache expired.
-    Used by: Ministry dashboard risk cards, map overlay
     """
     from db.redis_client import get_redis
     import json
@@ -106,10 +105,7 @@ async def get_risk_state():
 # GET /api/events
 @router.get("/events")
 async def get_events(limit: int = 10, corridor: Optional[str] = None):
-    """
-    Returns recent verified events from Agent 1.
-    Used by: Events feed on all dashboards
-    """
+    """Returns recent verified events from Agent 1."""
     events = MOCK_EVENTS
     if corridor:
         events = [e for e in events if e["corridor"] == corridor]
@@ -119,10 +115,7 @@ async def get_events(limit: int = 10, corridor: Optional[str] = None):
 # GET /api/procurement/options
 @router.get("/procurement/options")
 async def get_procurement_options(status: Optional[str] = None):
-    """
-    Returns procurement alternatives evaluated by Agent 6.
-    Used by: Procurement Analyst dashboard
-    """
+    """Returns procurement alternatives evaluated by Agent 6."""
     options = MOCK_PROCUREMENT_OPTIONS
     if status:
         options = [o for o in options if o["status"] == status]
@@ -132,10 +125,7 @@ async def get_procurement_options(status: Optional[str] = None):
 # GET /api/playbook/{id}
 @router.get("/playbook/{playbook_id}")
 async def get_playbook(playbook_id: str):
-    """
-    Returns full crisis playbook by ID.
-    Used by: All role dashboards during crisis
-    """
+    """Returns full crisis playbook by ID."""
     playbook = _playbooks.get(playbook_id)
     if not playbook:
         raise HTTPException(
@@ -145,7 +135,7 @@ async def get_playbook(playbook_id: str):
     return playbook
 
 
-# PATCH /api/playbook/{id}/approve
+# PATCH /api/playbook/{id}/approve  (FIX 3 — accepts array)
 @router.patch("/playbook/{playbook_id}/approve")
 async def approve_playbook_action(
     playbook_id: str,
@@ -153,36 +143,43 @@ async def approve_playbook_action(
     authorization: Optional[str] = Header(None)
 ):
     """
-    Analyst approves or rejects a procurement recommendation.
-    Body: {"action_id": "proc_001", "decision": "approved", "note": "optional"}
-    Used by: Procurement Analyst dashboard
+    Analyst approves or rejects procurement recommendations.
+    Accepts BOTH single action and array of decisions.
+    Body option 1: {"action_id": "proc_001", "decision": "approved", "note": ""}
+    Body option 2: {"decisions": [{"action_id": "proc_001", "decision": "approved", "note": ""}]}
     """
     playbook = _playbooks.get(playbook_id)
     if not playbook:
         raise HTTPException(status_code=404, detail="Playbook not found")
 
-    action_id = body.get("action_id")
-    decision = body.get("decision")
-    note = body.get("note", "")
-
-    if not action_id or decision not in ["approved", "rejected"]:
-        raise HTTPException(
-            status_code=400,
-            detail="Body must have action_id and decision (approved/rejected)"
-        )
-
-    entry = {"action_id": action_id, "note": note}
-
-    if decision == "approved":
-        playbook["approved_actions"].append(entry)
+    if "decisions" in body:
+        decisions = body["decisions"]
     else:
-        playbook["rejected_actions"].append(entry)
+        decisions = [body]
+
+    results = []
+    for item in decisions:
+        action_id = item.get("action_id")
+        decision = item.get("decision")
+        note = item.get("note", "")
+
+        if not action_id or decision not in ["approved", "rejected"]:
+            continue
+
+        entry = {"action_id": action_id, "note": note}
+        if decision == "approved":
+            playbook["approved_actions"].append(entry)
+        else:
+            playbook["rejected_actions"].append(entry)
+
+        results.append({"action_id": action_id, "decision": decision})
 
     playbook["status"] = "in_review"
 
     return {
-        "message": f"Action {action_id} {decision}",
+        "message": f"{len(results)} action(s) processed",
         "playbook_id": playbook_id,
+        "results": results,
         "approved_count": len(playbook["approved_actions"]),
         "rejected_count": len(playbook["rejected_actions"])
     }
@@ -191,12 +188,7 @@ async def approve_playbook_action(
 # PATCH /api/risk-weights
 @router.patch("/risk-weights")
 async def update_risk_weights(body: dict):
-    """
-    Updates risk factor weights and immediately recalculates
-    risk vector with new weights.
-    Body: {"military_incidents": 0.4, "conflict_escalation": 0.2, ...}
-    Used by: Admin dashboard weight sliders
-    """
+    """Updates risk factor weights and recalculates risk vector."""
     total = sum(body.values())
     if abs(total - 1.0) > 0.01:
         raise HTTPException(
@@ -214,29 +206,26 @@ async def update_risk_weights(body: dict):
     }
 
 
-# GET /api/agents/status
+# GET /api/agents/status  (FIX 2 — dict shape, correct stream keys)
 @router.get("/agents/status")
 async def get_agents_status():
     """
     Returns last run time and status for all 8 agents.
     Reads real data from Redis where available.
-    Falls back to mock data for agents not yet built.
-    Used by: Admin dashboard, Ministry agent status panel
     """
     from db.redis_client import get_redis
     import json
 
     r = await get_redis()
 
-    # Read real run data from Redis for built agents
     agent1_data = await r.get("agent1:last_run")
     agent3_data = await r.get("agent3:last_run")
+    agent5_data = await r.get("agent5:last_run")
 
-    # Parse real data if available
     agent1_info = json.loads(agent1_data) if agent1_data else None
     agent3_info = json.loads(agent3_data) if agent3_data else None
+    agent5_info = json.loads(agent5_data) if agent5_data else None
 
-    # Get Redis stream depths
     try:
         raw_stream_len = await r.xlen("events:raw")
         verified_stream_len = await r.xlen("events:verified")
@@ -244,119 +233,79 @@ async def get_agents_status():
         raw_stream_len = 0
         verified_stream_len = 0
 
-    agents = [
-        {
-            "agent": "Agent1_Ingestion",
-            "status": "running" if agent1_info else "idle",
-            "last_run": agent1_info.get("timestamp") if agent1_info else None,
-            "events_processed": agent1_info.get("events_found", 0) if agent1_info else 0,
-            "queue_depth": raw_stream_len,
-            "mode": agent1_info.get("system_mode", "NORMAL") if agent1_info else "NORMAL"
-        },
-        {
-            "agent": "Agent2_Extraction",
-            "status": "idle",
-            "last_run": None,
-            "queue_depth": verified_stream_len,
-            "mode": "STANDBY"
-        },
-        {
-            "agent": "Agent3_RiskEngine",
-            "status": "running" if agent3_info else "idle",
-            "last_run": agent3_info.get("timestamp") if agent3_info else None,
-            "risk_scores_updated": 4 if agent3_info else 0,
-            "queue_depth": 0,
-            "mode": "RUNNING" if agent3_info else "STANDBY"
-        },
-        {
-            "agent": "Agent4_Compound",
-            "status": "standby",
-            "last_run": None,
-            "queue_depth": 0,
-            "mode": "STANDBY"
-        },
-        {
-            "agent": "Agent5_SPR",
-            "status": "standby",
-            "last_run": None,
-            "queue_depth": 0,
-            "mode": "STANDBY"
-        },
-        {
-            "agent": "Agent6_Procurement",
-            "status": "standby",
-            "last_run": None,
-            "queue_depth": 0,
-            "mode": "STANDBY"
-        },
-        {
-            "agent": "Agent7_Validator",
-            "status": "standby",
-            "last_run": None,
-            "queue_depth": 0,
-            "mode": "STANDBY"
-        },
-        {
-            "agent": "Agent8_Playbook",
-            "status": "standby",
-            "last_run": None,
-            "queue_depth": 0,
-            "mode": "STANDBY"
-        }
-    ]
-
     return {
-        "agents": agents,
-        "stream_depths": {
-            "events_raw": raw_stream_len,
-            "events_verified": verified_stream_len
+        "agents": {
+            "agent1": {
+                "id": "agent1",
+                "name": "Agent1_Ingestion",
+                "status": "running" if agent1_info else "idle",
+                "last_run": agent1_info.get("timestamp") if agent1_info else None,
+                "events_processed": agent1_info.get("events_found", 0) if agent1_info else 0,
+                "mode": agent1_info.get("system_mode", "NORMAL") if agent1_info else "NORMAL"
+            },
+            "agent2": {
+                "id": "agent2",
+                "name": "Agent2_Extraction",
+                "status": "idle",
+                "last_run": None,
+                "mode": "STANDBY"
+            },
+            "agent3": {
+                "id": "agent3",
+                "name": "Agent3_RiskEngine",
+                "status": "running" if agent3_info else "idle",
+                "last_run": agent3_info.get("timestamp") if agent3_info else None,
+                "mode": "RUNNING" if agent3_info else "STANDBY"
+            },
+            "agent4": {"id": "agent4", "name": "Agent4_Compound", "status": "standby", "last_run": None, "mode": "STANDBY"},
+            "agent5": {
+                "id": "agent5",
+                "name": "Agent5_SPR",
+                "status": "idle" if agent5_info else "standby",
+                "last_run": agent5_info.get("timestamp") if agent5_info else None,
+                "mode": "STANDBY"
+            },
+            "agent6": {"id": "agent6", "name": "Agent6_Procurement", "status": "standby", "last_run": None, "mode": "STANDBY"},
+            "agent7": {"id": "agent7", "name": "Agent7_Validator", "status": "standby", "last_run": None, "mode": "STANDBY"},
+            "agent8": {"id": "agent8", "name": "Agent8_Playbook", "status": "standby", "last_run": None, "mode": "STANDBY"}
         },
-        "checked_at": __import__('datetime').datetime.utcnow().isoformat()
+        "redis_stream_depths": {
+            "events:raw": raw_stream_len,
+            "events:verified": verified_stream_len
+        },
+        "checked_at": datetime.datetime.utcnow().isoformat()
     }
 
 
 # GET /api/map/vessels
 @router.get("/map/vessels")
 async def get_vessels():
-    """
-    Returns tanker positions for map display.
-    Reads from Redis cache if available.
-    Falls back to hardcoded mock positions for demo.
-    Used by: Map component on all dashboards
-    """
+    """Returns tanker positions. Reads Redis cache, falls back to mock."""
     from db.redis_client import get_redis
     import json
 
     try:
         r = await get_redis()
-        cached = await r.get("ais:vessels:latest")
+        cached = await r.get("vessels:live")
         if cached:
-            vessels = json.loads(cached)
-            return {"vessels": vessels, "source": "live_cache"}
+            return {"vessels": json.loads(cached), "source": "live_cache"}
     except Exception:
         pass
 
-    # Fallback to hardcoded mock for demo
-    return {"vessels": MOCK_VESSELS, "source": "mock"} 
+    return {"vessels": MOCK_VESSELS, "source": "mock"}
 
 
 # GET /api/kgraph
 @router.get("/kgraph")
 async def get_knowledge_graph():
-    """
-    Returns Knowledge Graph nodes and edges for D3 visualization.
-    Used by: Knowledge Graph panel on Ministry dashboard
-    """
+    """Returns Knowledge Graph nodes and edges for visualization."""
     return MOCK_KGRAPH
 
 
-# GET /api/spr/status
+# GET /api/spr/status  (FIX 11 — note field added)
 @router.get("/spr/status")
 async def get_spr_status():
-    """
-    Returns current SPR levels and drawdown schedule.
-    Used by: Ministry dashboard SPR card
-    """
+    """Returns current SPR levels and drawdown schedule."""
     return {
         "total_capacity_mb": 43.9,
         "current_level_mb": 38.0,
@@ -365,21 +314,79 @@ async def get_spr_status():
         "days_cover": 7.45,
         "days_cover_with_commercial": 9.5,
         "active_drawdown": False,
-        "drawdown_schedule": None
+        "drawdown_schedule": None,
+        "note": "days_cover uses strategic SPR only (38mb). days_cover_with_commercial includes private commercial stocks. Government controls strategic reserve only."
     }
+
+
+# GET /api/prices/live  (Day 7)
+@router.get("/prices/live")
+async def get_live_prices():
+    """
+    Returns live Brent and WTI prices from Redis cache.
+    Falls back to direct yfinance call if cache expired.
+    """
+    from db.redis_client import get_redis
+    import json
+
+    try:
+        r = await get_redis()
+        cached = await r.get("prices:live")
+        if cached:
+            return {"prices": json.loads(cached), "source": "cache"}
+    except Exception:
+        pass
+
+    from agents.clients.market_client import fetch_live_prices
+    prices = await fetch_live_prices()
+    if prices:
+        return {"prices": prices, "source": "live_fetch"}
+
+    return {
+        "prices": {
+            "brent": {"price": 82.0, "change_pct": 0.0, "commodity": "Brent Crude"},
+            "wti": {"price": 78.5, "change_pct": 0.0, "commodity": "WTI Crude"}
+        },
+        "source": "fallback"
+    }
+
+
+# GET /api/spr/schedule/latest  (NEW — Day 7)
+@router.get("/spr/schedule/latest")
+async def get_spr_schedule():
+    """Returns latest SPR drawdown schedule from Agent 5."""
+    from db.redis_client import get_redis
+    import json
+
+    try:
+        r = await get_redis()
+        cached = await r.get("spr:schedule:latest")
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+
+    return {
+        "status": "no_active_scenario",
+        "message": "No SPR schedule generated yet. Trigger via demo crisis inject.",
+        "confidence": None
+    }
+
+
+# POST /api/spr/optimize  (NEW — Day 7)
+@router.post("/spr/optimize")
+async def trigger_spr_optimization(body: dict = {}):
+    """Manually triggers Agent 5 SPR optimization."""
+    from agents.agent5_spr import run_agent5
+    import_gap = body.get("import_gap_mbd", None)
+    result = await run_agent5(import_gap_mbd=import_gap)
+    return result
 
 
 # POST /api/demo/inject-crisis
 @router.post("/demo/inject-crisis")
-async def inject_demo_crisis(
-    corridor: str = "Hormuz",
-    severity: int = 8
-):
-    """
-    DEMO ONLY endpoint.
-    Injects a fake crisis event to trigger the full agent pipeline.
-    Called at Minute 2 of the live demo.
-    """
+async def inject_demo_crisis(corridor: str = "Hormuz", severity: int = 8):
+    """DEMO ONLY — injects fake crisis event to trigger the pipeline."""
     from agents.agent1_ingestion import run_agent1_demo_inject
     import asyncio
     asyncio.create_task(run_agent1_demo_inject(corridor, severity))
@@ -390,24 +397,33 @@ async def inject_demo_crisis(
     }
 
 
+# POST /api/debug/broadcast-test
+@router.post("/debug/broadcast-test")
+async def test_broadcast(body: dict):
+    """Manually triggers a WebSocket broadcast to all connected clients."""
+    from main import broadcast_to_dashboard
+    message_type = body.get("type", "test")
+    data = body.get("data", {"message": "test broadcast"})
+    await broadcast_to_dashboard(message_type, data)
+    return {
+        "message": "Broadcast sent to all connected WebSocket clients",
+        "type": message_type,
+        "data": data
+    }
+
+
 # GET /api/debug/corridor-state
 @router.get("/debug/corridor-state")
 async def get_corridor_state():
-    """
-    Debug endpoint — shows current verification state.
-    Use this to confirm events are flowing through the pipeline.
-    """
+    """Debug — shows current verification state."""
     from agents.agent1_verification import _active_corridor_events
-    from datetime import datetime
 
     state = {}
     for corridor, events in _active_corridor_events.items():
         state[corridor] = {
             "event_count": len(events),
             "sources": list(set(e["source"] for e in events)),
-            "max_severity": max(
-                (e["severity"] for e in events), default=0
-            ),
+            "max_severity": max((e["severity"] for e in events), default=0),
             "latest_event": max(
                 (e["event_time"].isoformat() for e in events),
                 default=None
@@ -419,17 +435,14 @@ async def get_corridor_state():
         "total_active_events": sum(
             len(v) for v in _active_corridor_events.values()
         ),
-        "checked_at": datetime.utcnow().isoformat()
+        "checked_at": datetime.datetime.utcnow().isoformat()
     }
 
 
 # GET /api/debug/verified-events
 @router.get("/debug/verified-events")
 async def get_verified_events(limit: int = 10):
-    """
-    Shows recent verified events from PostgreSQL.
-    Use this to confirm WATCH/CONFIRMED events are being written.
-    """
+    """Shows recent verified events from PostgreSQL."""
     from db.postgres import get_db_pool
     pool = await get_db_pool()
     async with pool.acquire() as conn:
@@ -444,37 +457,4 @@ async def get_verified_events(limit: int = 10):
     return {
         "verified_events": [dict(row) for row in rows],
         "total": len(rows)
-    } 
-
-
-# POST /api/debug/broadcast-test
-# Tests WebSocket broadcast to all connected clients
-@router.post("/debug/broadcast-test")
-async def test_broadcast(body: dict):
-    """
-    Manually triggers a WebSocket broadcast to all connected clients.
-    Use this to test the WebSocket connection from the frontend.
-
-    Body: {"type": "risk_update", "data": {"Hormuz": 0.82}}
-
-    To test:
-    1. Open http://localhost:8000/docs in one tab
-    2. Open browser console in another tab
-    3. Run this in console:
-       const ws = new WebSocket('ws://localhost:8000/ws/agent-status')
-       ws.onmessage = (e) => console.log(JSON.parse(e.data))
-    4. Execute this endpoint
-    5. Should see the message appear in console
-    """
-    from main import broadcast_to_dashboard
-
-    message_type = body.get("type", "test")
-    data = body.get("data", {"message": "test broadcast"})
-
-    await broadcast_to_dashboard(message_type, data)
-
-    return {
-        "message": "Broadcast sent to all connected WebSocket clients",
-        "type": message_type,
-        "data": data
     } 

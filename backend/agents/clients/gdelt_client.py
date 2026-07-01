@@ -152,13 +152,15 @@ async def fetch_gdelt_events() -> list:
 
 def _detect_corridor(text: str) -> str:
     """Maps event text to a shipping corridor."""
-    if any(kw in text for kw in ["hormuz", "persian gulf", "iran", "gulf"]):
+    if any(kw in text for kw in ["hormuz", "persian gulf", "iran", "gulf of oman"]):
         return "Hormuz"
     if any(kw in text for kw in ["red sea", "houthi", "bab el mandeb", "aden"]):
         return "Red_Sea"
     if any(kw in text for kw in ["suez"]):
         return "Suez"
-    return None
+    if any(kw in text for kw in ["cape of good hope", "cape route", "southern africa"]):
+        return "Cape"
+    return None 
 
 
 def _tone_to_severity(tone: float) -> int:

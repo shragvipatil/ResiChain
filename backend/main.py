@@ -81,6 +81,7 @@ async def lifespan(app: FastAPI):
     from agents.clients.ofac_client import download_and_store_ofac as ofac_download
     from agents.agent1_verification import run_verification_cycle, run_event_expiry
     from agents.agent3_risk_engine import run_agent3 
+    from agents.clients.market_client import fetch_vessel_positions, fetch_live_prices, fetch_alpha_vantage_daily
 
     # Agent 1 — polls every 5 minutes
     scheduler.add_job(
@@ -127,10 +128,40 @@ async def lifespan(app: FastAPI):
         id="agent3_risk_engine",
         replace_existing=True
     )
+
+    # Vessel positions — every 5 minutes
+    scheduler.add_job(
+        fetch_vessel_positions,
+        "interval",
+        seconds=300,
+        id="vessel_polling",
+        replace_existing=True
+    )
+
+    # Live prices — every 5 minutes
+    scheduler.add_job(
+        fetch_live_prices,
+        "interval",
+        seconds=300,
+        id="price_polling",
+        replace_existing=True
+    )
+
+    # Alpha Vantage daily historical — once per day
+    scheduler.add_job(
+        fetch_alpha_vantage_daily,
+        "cron",
+        hour=6,
+        minute=0,
+        id="alphavantage_daily",
+        replace_existing=True
+    )
+
     
     logger.info("Scheduled: Agent 1 every 5 min, OFAC daily at 02:00 UTC") 
     logger.info("Scheduled: Verification every 30s, Expiry every 1h")
     logger.info("Scheduled: Agent 3 every 60 seconds") 
+    logger.info("Scheduled: Vessel + price polling every 5 min") 
     scheduler.start()
     logger.info("APScheduler started")
 
