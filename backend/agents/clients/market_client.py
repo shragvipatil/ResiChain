@@ -3,7 +3,7 @@
 # Polls yfinance for Brent/WTI prices every 5 minutes
 # Polls AISHub for vessel positions every 5 minutes
 # Writes all data to Redis with TTL
-# Alpha Vantage daily historical series → PostgreSQL
+# Alpha Vantage daily historical series → PostgreSQL (via Person B's queries)
 # ============================================================
 
 import json
@@ -12,7 +12,7 @@ import os
 import asyncio
 from datetime import datetime
 from db.redis_client import get_redis
-from db.postgres import get_db_pool
+from db.postgres_queries import upsert_price_history
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,7 @@ VESSEL_REGIONS = {
     "Red_Sea":     (10.0, 30.0, 32.0, 50.0),
     "Gulf_of_Aden": (10.0, 15.0, 42.0, 55.0)
 }
+
 
 # ---- Vessel Position Polling ----------------------------
 async def fetch_vessel_positions() -> list:
@@ -41,14 +42,12 @@ async def fetch_vessel_positions() -> list:
     if aishub_user and aishub_user != "placeholder":
         vessels = await _fetch_from_aishub(aishub_user)
 
-    # If AISHub not available — use demo positions
     if not vessels:
         vessels = _get_demo_vessel_positions()
         logger.info("Vessels: Using demo positions (AISHub not configured)")
     else:
         logger.info(f"Vessels: Got {len(vessels)} real positions from AISHub")
 
-    # Write to Redis with 6-minute TTL
     r = await get_redis()
     await r.setex(
         "vessels:live",
@@ -81,11 +80,9 @@ async def _fetch_from_aishub(username: str) -> list:
                     return []
                 data = await resp.json()
 
-        # AISHub returns list of vessel dicts
         for vessel in data:
             try:
                 ship_type = int(vessel.get("SHIPTYPE", 0))
-                # 80-89 = tanker types
                 if not (80 <= ship_type <= 89):
                     continue
 
@@ -119,10 +116,8 @@ def _get_demo_vessel_positions() -> list:
         {
             "mmsi": "477123456",
             "name": "GULF CARRIER",
-            "lat": 24.5,
-            "lon": 56.3,
-            "speed": 12.4,
-            "heading": 95,
+            "lat": 24.5, "lon": 56.3,
+            "speed": 12.4, "heading": 95,
             "destination": "SIKKA",
             "vessel_type": "crude_tanker",
             "source": "demo"
@@ -130,10 +125,8 @@ def _get_demo_vessel_positions() -> list:
         {
             "mmsi": "477234567",
             "name": "ARABIAN STAR",
-            "lat": 22.1,
-            "lon": 60.2,
-            "speed": 11.8,
-            "heading": 110,
+            "lat": 22.1, "lon": 60.2,
+            "speed": 11.8, "heading": 110,
             "destination": "VADINAR",
             "vessel_type": "crude_tanker",
             "source": "demo"
@@ -141,10 +134,8 @@ def _get_demo_vessel_positions() -> list:
         {
             "mmsi": "477345678",
             "name": "INDIA SPIRIT",
-            "lat": 19.8,
-            "lon": 63.4,
-            "speed": 13.1,
-            "heading": 120,
+            "lat": 19.8, "lon": 63.4,
+            "speed": 13.1, "heading": 120,
             "destination": "PARADIP",
             "vessel_type": "crude_tanker",
             "source": "demo"
@@ -152,10 +143,8 @@ def _get_demo_vessel_positions() -> list:
         {
             "mmsi": "477456789",
             "name": "PERSIAN GLORY",
-            "lat": 26.2,
-            "lon": 57.1,
-            "speed": 10.9,
-            "heading": 88,
+            "lat": 26.2, "lon": 57.1,
+            "speed": 10.9, "heading": 88,
             "destination": "KOCHI",
             "vessel_type": "crude_tanker",
             "source": "demo"
@@ -177,15 +166,13 @@ async def fetch_live_prices() -> dict:
             logger.warning("Price fetch: yfinance failed, using cached/default")
             return {}
 
-        # Write to Redis
         r = await get_redis()
         await r.setex(
             "prices:live",
-            360,  # 6 minutes TTL
+            360,
             json.dumps(prices)
         )
 
-        # Update individual Brent price key for Agent 3
         if "brent" in prices:
             await r.setex(
                 "brent:price:latest",
@@ -217,7 +204,6 @@ async def _fetch_prices_yfinance() -> dict:
         def _download():
             result = {}
 
-            # Brent crude futures
             brent = yf.Ticker("BZ=F")
             brent_hist = brent.history(period="5d")
             if not brent_hist.empty:
@@ -234,7 +220,6 @@ async def _fetch_prices_yfinance() -> dict:
                         "unit": "USD/barrel"
                     }
 
-            # WTI crude futures
             wti = yf.Ticker("CL=F")
             wti_hist = wti.history(period="5d")
             if not wti_hist.empty:
@@ -266,7 +251,7 @@ async def fetch_alpha_vantage_daily():
     """
     Fetches daily Brent price series from Alpha Vantage.
     Runs once daily — stays within 25 call/day free limit.
-    Stores in PostgreSQL price_history table.
+    Stores in PostgreSQL price_history via Person B's query layer.
     Used by Agent 6 for cost delta calculations.
     """
     api_key = os.getenv("ALPHA_VANTAGE_API_KEY", "")
@@ -294,25 +279,18 @@ async def fetch_alpha_vantage_daily():
         if not prices:
             return
 
-        pool = await get_db_pool()
-        async with pool.acquire() as conn:
-            inserted = 0
-            for entry in prices[:90]:  # Last 90 days only
-                try:
-                    await conn.execute("""
-                        INSERT INTO price_history
-                        (commodity, price_usd, source, date_str)
-                        VALUES ($1, $2, $3, $4)
-                        ON CONFLICT DO NOTHING
-                    """,
-                        "Brent",
-                        float(entry["value"]),
-                        "alphavantage",
-                        entry["date"]
-                    )
-                    inserted += 1
-                except Exception:
-                    continue
+        inserted = 0
+        for entry in prices[:90]:  # Last 90 days only
+            try:
+                upsert_price_history(
+                    date=entry["date"],
+                    brent_usd=float(entry["value"]),
+                    wti_usd=None,
+                    source="alphavantage"
+                )
+                inserted += 1
+            except Exception:
+                continue
 
         logger.info(f"Alpha Vantage: Stored {inserted} daily price records")
 

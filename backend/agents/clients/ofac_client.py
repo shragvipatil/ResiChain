@@ -5,20 +5,20 @@
 # Scheduled: daily at 02:00 UTC
 # ============================================================
 
+
 import aiohttp
 import xml.etree.ElementTree as ET
 import logging
-import json
-from db.postgres import get_db_pool
+from db.postgres_queries import upsert_ofac_entry, check_ofac_match
 
 logger = logging.getLogger(__name__)
 
 OFAC_URL = "https://www.treasury.gov/ofac/downloads/sdnlist.xml"
 
-# Namespaces in the OFAC XML
 NS = {
     "sdn": "http://tempuri.org/sdnList.xsd"
 }
+
 
 async def download_and_store_ofac() -> dict:
     """
@@ -42,28 +42,23 @@ async def download_and_store_ofac() -> dict:
 
         logger.info(f"OFAC: Downloaded {len(content) / 1024 / 1024:.1f} MB")
 
-        # Parse XML
         root = ET.fromstring(content)
-        entries = []
+        inserted = 0
 
-        # Try with namespace first, then without
         sdn_entries = root.findall(".//sdn:sdnEntry", NS)
         if not sdn_entries:
             sdn_entries = root.findall(".//sdnEntry")
 
         for entry in sdn_entries:
             try:
-                # Extract fields — handle both namespaced and plain
                 def get_text(tag):
                     el = entry.find(f"sdn:{tag}", NS) or entry.find(tag)
                     return el.text.strip() if el is not None and el.text else ""
 
-                uid = get_text("uid")
                 first_name = get_text("firstName")
                 last_name = get_text("lastName")
-                sdn_type = get_text("sdnType")
+                full_name = f"{first_name} {last_name}".strip() or last_name or first_name
 
-                # Get programs (sanctions programs like IRAN, RUSSIA etc)
                 programs = []
                 prog_list = entry.find("sdn:programList", NS) or entry.find("programList")
                 if prog_list:
@@ -72,57 +67,33 @@ async def download_and_store_ofac() -> dict:
                         if prog_text:
                             programs.append(prog_text)
 
-                # Get aliases
                 aliases = []
                 aka_list = entry.find("sdn:akaList", NS) or entry.find("akaList")
                 if aka_list:
                     for aka in aka_list:
                         aka_fn = aka.find("sdn:firstName", NS) or aka.find("firstName")
                         aka_ln = aka.find("sdn:lastName", NS) or aka.find("lastName")
+
+                        alias_parts = []
+                        if aka_fn is not None and aka_fn.text:
+                            alias_parts.append(aka_fn.text.strip())
                         if aka_ln is not None and aka_ln.text:
-                            aliases.append(aka_ln.text.strip())
+                            alias_parts.append(aka_ln.text.strip())
 
-                entries.append({
-                    "uid": uid,
-                    "first_name": first_name,
-                    "last_name": last_name,
-                    "full_name": f"{first_name} {last_name}".strip(),
-                    "sdn_type": sdn_type,
-                    "programs": programs,
-                    "aliases": aliases
-                })
+                        alias_name = " ".join(alias_parts).strip()
+                        if alias_name:
+                            aliases.append(alias_name)
 
-            except Exception as e:
-                continue
-
-        # Store in PostgreSQL
-        pool = await get_db_pool()
-        async with pool.acquire() as conn:
-            # Clear old entries
-            await conn.execute("DELETE FROM ofac_sanctions")
-
-            # Insert new entries in batches
-            inserted = 0
-            for entry in entries:
-                await conn.execute("""
-                    INSERT INTO ofac_sanctions
-                    (uid, full_name, first_name, last_name, sdn_type, programs, aliases)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7)
-                    ON CONFLICT (uid) DO UPDATE
-                    SET full_name = EXCLUDED.full_name,
-                        programs = EXCLUDED.programs,
-                        aliases = EXCLUDED.aliases,
-                        updated_at = NOW()
-                """,
-                    entry["uid"],
-                    entry["full_name"],
-                    entry["first_name"],
-                    entry["last_name"],
-                    entry["sdn_type"],
-                    json.dumps(entry["programs"]),
-                    json.dumps(entry["aliases"])
+                upsert_ofac_entry(
+                    entity_name=full_name,
+                    aliases=", ".join(aliases) if aliases else None,
+                    program=", ".join(programs) if programs else None,
+                    date_imposed=None,
                 )
                 inserted += 1
+
+            except Exception:
+                continue
 
         logger.info(f"OFAC: Stored {inserted} SDN entries in PostgreSQL")
         return {"success": True, "entries_stored": inserted}
@@ -139,29 +110,17 @@ async def check_supplier_sanctions(supplier_name: str) -> dict:
     Returns: {"sanctioned": bool, "programs": [], "matched_name": str}
     """
     try:
-        pool = await get_db_pool()
-        async with pool.acquire() as conn:
-            # Check exact name and aliases
-            rows = await conn.fetch("""
-                SELECT full_name, programs, aliases
-                FROM ofac_sanctions
-                WHERE LOWER(full_name) LIKE LOWER($1)
-                   OR aliases::text ILIKE $2
-            """,
-                f"%{supplier_name}%",
-                f"%{supplier_name}%"
-            )
+        sanctioned = check_ofac_match(supplier_name)
 
-            if rows:
-                programs = json.loads(rows[0]["programs"])
-                return {
-                    "sanctioned": True,
-                    "programs": programs,
-                    "matched_name": rows[0]["full_name"]
-                }
+        if sanctioned:
+            return {
+                "sanctioned": True,
+                "programs": [],
+                "matched_name": supplier_name
+            }
 
-            return {"sanctioned": False, "programs": [], "matched_name": None}
+        return {"sanctioned": False, "programs": [], "matched_name": None}
 
     except Exception as e:
         logger.error(f"OFAC check error: {e}")
-        return {"sanctioned": False, "programs": [], "error": str(e)} 
+        return {"sanctioned": False, "programs": [], "error": str(e)}

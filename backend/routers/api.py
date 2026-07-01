@@ -1,6 +1,7 @@
 # ============================================================
 # ResiChain — Main API Router
 # All fixes applied (Fix 2, 3, 5 from analysis)
+# Merged clean version — psycopg aligned
 # ============================================================
 
 from fastapi import APIRouter, HTTPException, Header
@@ -20,7 +21,6 @@ from contracts.api_contracts import (
 
 router = APIRouter(prefix="/api", tags=["API"])
 
-# ---- In-memory state for mock approvals -----------------
 _playbooks = {"pb_001": copy.deepcopy(MOCK_PLAYBOOK)}
 _risk_weights = {
     "military_incidents": 0.35,
@@ -30,7 +30,7 @@ _risk_weights = {
     "seasonal_risk": 0.05
 }
 
-# ---- JWT Middleware Skeleton -----------------------------
+
 def validate_token_format(authorization: Optional[str]) -> bool:
     if not authorization:
         return False
@@ -39,7 +39,7 @@ def validate_token_format(authorization: Optional[str]) -> bool:
         return False
     return True
 
-# ---- Helper functions (module level) --------------------
+
 def _risk_to_status(score: float) -> str:
     if score >= 0.65:
         return "CRISIS"
@@ -51,8 +51,7 @@ def _risk_to_status(score: float) -> str:
 def _get_system_mode(risk_data: dict) -> str:
     scores = [
         v for k, v in risk_data.items()
-        if isinstance(v, (int, float))
-        and k not in ["updated_at"]
+        if isinstance(v, (int, float)) and k not in ["updated_at"]
     ]
     if not scores:
         return "NORMAL"
@@ -63,11 +62,7 @@ def _get_system_mode(risk_data: dict) -> str:
         return "WATCH"
     return "NORMAL"
 
-# =========================================================
-# ENDPOINTS
-# =========================================================
 
-# GET /api/risk-state
 @router.get("/risk-state")
 async def get_risk_state():
     """
@@ -102,7 +97,6 @@ async def get_risk_state():
     return MOCK_RISK_STATE
 
 
-# GET /api/events
 @router.get("/events")
 async def get_events(limit: int = 10, corridor: Optional[str] = None):
     """Returns recent verified events from Agent 1."""
@@ -112,7 +106,6 @@ async def get_events(limit: int = 10, corridor: Optional[str] = None):
     return {"events": events[:limit], "total": len(events)}
 
 
-# GET /api/procurement/options
 @router.get("/procurement/options")
 async def get_procurement_options(status: Optional[str] = None):
     """Returns procurement alternatives evaluated by Agent 6."""
@@ -122,7 +115,6 @@ async def get_procurement_options(status: Optional[str] = None):
     return {"options": options, "total": len(options)}
 
 
-# GET /api/playbook/{id}
 @router.get("/playbook/{playbook_id}")
 async def get_playbook(playbook_id: str):
     """Returns full crisis playbook by ID."""
@@ -145,8 +137,6 @@ async def approve_playbook_action(
     """
     Analyst approves or rejects procurement recommendations.
     Accepts BOTH single action and array of decisions.
-    Body option 1: {"action_id": "proc_001", "decision": "approved", "note": ""}
-    Body option 2: {"decisions": [{"action_id": "proc_001", "decision": "approved", "note": ""}]}
     """
     playbook = _playbooks.get(playbook_id)
     if not playbook:
@@ -185,7 +175,6 @@ async def approve_playbook_action(
     }
 
 
-# PATCH /api/risk-weights
 @router.patch("/risk-weights")
 async def update_risk_weights(body: dict):
     """Updates risk factor weights and recalculates risk vector."""
@@ -277,7 +266,6 @@ async def get_agents_status():
     }
 
 
-# GET /api/map/vessels
 @router.get("/map/vessels")
 async def get_vessels():
     """Returns tanker positions. Reads Redis cache, falls back to mock."""
@@ -295,7 +283,6 @@ async def get_vessels():
     return {"vessels": MOCK_VESSELS, "source": "mock"}
 
 
-# GET /api/kgraph
 @router.get("/kgraph")
 async def get_knowledge_graph():
     """Returns Knowledge Graph nodes and edges for visualization."""
@@ -322,10 +309,7 @@ async def get_spr_status():
 # GET /api/prices/live  (Day 7)
 @router.get("/prices/live")
 async def get_live_prices():
-    """
-    Returns live Brent and WTI prices from Redis cache.
-    Falls back to direct yfinance call if cache expired.
-    """
+    """Returns live Brent and WTI prices from Redis cache."""
     from db.redis_client import get_redis
     import json
 
@@ -351,7 +335,7 @@ async def get_live_prices():
     }
 
 
-# GET /api/spr/schedule/latest  (NEW — Day 7)
+# GET /api/spr/schedule/latest  (Day 7)
 @router.get("/spr/schedule/latest")
 async def get_spr_schedule():
     """Returns latest SPR drawdown schedule from Agent 5."""
@@ -373,13 +357,28 @@ async def get_spr_schedule():
     }
 
 
-# POST /api/spr/optimize  (NEW — Day 7)
+# POST /api/spr/optimize  (Day 7 — uses Person B's agent5)
 @router.post("/spr/optimize")
 async def trigger_spr_optimization(body: dict = {}):
-    """Manually triggers Agent 5 SPR optimization."""
-    from agents.agent5_spr import run_agent5
+    """
+    Manually triggers Agent 5 SPR optimization.
+    Uses Person B's solve_spr_schedule (LangGraph-compatible agent5.py).
+    Optional body: {"import_gap_mbd": 1.5} -> converted to a flat import shortfall.
+    """
+    from agents.agent5 import solve_spr_schedule
+
     import_gap = body.get("import_gap_mbd", None)
-    result = await run_agent5(import_gap_mbd=import_gap)
+
+    # Person B's solver takes available_imports per day, not a gap.
+    # Convert a single gap figure into a 30-day flat available-imports list:
+    # available = max(0, consumption - gap). If no gap given, pass None (uses live data).
+    available_imports = None
+    if import_gap is not None:
+        consumption = 5.1  # India daily consumption mbd (fallback baseline)
+        daily_available = max(0.0, consumption - float(import_gap))
+        available_imports = [daily_available] * 30
+
+    result = solve_spr_schedule(available_imports_mbd=available_imports)
     return result
 
 
@@ -425,8 +424,7 @@ async def get_corridor_state():
             "sources": list(set(e["source"] for e in events)),
             "max_severity": max((e["severity"] for e in events), default=0),
             "latest_event": max(
-                (e["event_time"].isoformat() for e in events),
-                default=None
+                (e["event_time"].isoformat() for e in events), default=None
             )
         }
 
@@ -439,22 +437,13 @@ async def get_corridor_state():
     }
 
 
-# GET /api/debug/verified-events
+# GET /api/debug/verified-events  (uses Person B's psycopg query)
 @router.get("/debug/verified-events")
-async def get_verified_events(limit: int = 10):
-    """Shows recent verified events from PostgreSQL."""
-    from db.postgres import get_db_pool
-    pool = await get_db_pool()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT corridor, stage, confidence,
-                   sources_confirming, max_severity, created_at
-            FROM verified_events
-            ORDER BY created_at DESC
-            LIMIT $1
-        """, limit)
-
+async def get_verified_events_debug(limit: int = 10):
+    """Shows recent verified events from PostgreSQL via Person B's query layer."""
+    from db.postgres_queries import get_verified_events
+    rows = get_verified_events(limit=limit, offset=0)
     return {
-        "verified_events": [dict(row) for row in rows],
+        "verified_events": rows,
         "total": len(rows)
     } 

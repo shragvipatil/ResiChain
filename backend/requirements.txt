@@ -2,13 +2,12 @@
 fastapi
 uvicorn[standard]
 python-multipart
-
+pytest
 # Database Connections
 asyncpg
 sqlalchemy
 alembic
-psycopg2-binary
-
+psycopg[binary]
 # Redis
 redis
 

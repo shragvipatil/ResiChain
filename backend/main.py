@@ -11,9 +11,9 @@ import os
 import json
 import logging
 
-from db.postgres import init_db
+from db.postgres_queries import init_db
 from db.redis_client import get_redis, init_redis_streams
-from db.neo4j_client import init_neo4j
+from db.neo4j_queries import init_neo4j
 
 
 # Import routers (add more as you build agents)
@@ -61,7 +61,7 @@ async def lifespan(app: FastAPI):
     logger.info("ResiChain starting up...")
 
     # 1. Initialise PostgreSQL tables
-    await init_db()
+    init_db()
     logger.info("PostgreSQL connected and tables ready")
 
     # 2. Initialise Redis streams

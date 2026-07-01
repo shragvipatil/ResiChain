@@ -30,7 +30,7 @@ interface Factor {
 }
 
 interface RiskWeights {
-  military_incident:    number;
+  military_incidents:    number;
   conflict_escalation:  number;
   sanctions_change:     number;
   market_volatility:    number;
@@ -39,7 +39,7 @@ interface RiskWeights {
 
 const FACTORS: Factor[] = [
   {
-    key:         "military_incident",
+    key:         "military_incidents",
     label:       "Military Incident",
     description: "GDELT codes 19–20 + UKMTO advisories",
     color:       "accent-red-500",
@@ -72,7 +72,7 @@ const FACTORS: Factor[] = [
 
 // Default weights (matching the document spec: 35/25/25/10/5)
 const DEFAULT_WEIGHTS: RiskWeights = {
-  military_incident:   35,
+  military_incidents:   35,
   conflict_escalation: 25,
   sanctions_change:    25,
   market_volatility:   10,
@@ -86,7 +86,7 @@ function normalise(weights: RiskWeights): RiskWeights {
   if (total === 0) return { ...DEFAULT_WEIGHTS };
   const ratio = 100 / total;
   return {
-    military_incident:   Math.round(weights.military_incident   * ratio),
+    military_incidents:   Math.round(weights.military_incidents   * ratio),
     conflict_escalation: Math.round(weights.conflict_escalation * ratio),
     sanctions_change:    Math.round(weights.sanctions_change    * ratio),
     market_volatility:   Math.round(weights.market_volatility   * ratio),

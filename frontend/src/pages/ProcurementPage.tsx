@@ -1,20 +1,11 @@
-/**
- * ProcurementPage.tsx  —  Day 4 deliverable (Person C)
- *
- * Four panels, all on mock data today:
- *   1. Spot Price Panel        — Brent + WTI cards
- *   2. Supplier Ranking Table  — confidence, route, grade, cost delta, lead time
- *   3. Contract Headroom Bars  — used vs available volume per supplier
- *   4. Rejection Trace Table   — every evaluated option with status badge + reason
- *
- * Day 13 upgrade: swap USE_MOCK flag in api/client.ts — no component changes needed.
- */
-
 import React, { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { getProcurementOptions, getLivePrices } from "../api/endpoints";
 import { ProcurementOption, ProcurementResponse, PricesResponse } from "../types";
+import RejectionTraceAnimation from "../components/RejectionTraceAnimation";
+import { useAppContext } from "../context/AppContext";
 
-// ── Mock contract headroom (no API endpoint yet — Day 13 replaces this) ──────
+// Day 13: replace with real API call
 const CONTRACT_HEADROOM = [
   { supplier: "Russia",       used_mbd: 0.38, max_mbd: 0.40, grade: "Urals" },
   { supplier: "Saudi Arabia", used_mbd: 0.22, max_mbd: 0.40, grade: "Arab Light" },
@@ -39,7 +30,7 @@ const changePill = (pct: number) => (
 );
 
 const confidenceBar = (score: number) => {
-  const pct = Math.round(score * 100);
+  const pct   = Math.round(score * 100);
   const color = score >= 0.8 ? "bg-green-500" : score >= 0.5 ? "bg-amber-500" : "bg-red-500";
   return (
     <div className="flex items-center gap-2">
@@ -61,17 +52,12 @@ const SpotPricePanel: React.FC<{ prices: PricesResponse | null; loading: boolean
     ].map(({ label, price, change, color }) => (
       <div key={label} className="bg-slate-800 border border-slate-700 rounded-xl p-5">
         <p className="text-slate-400 text-xs uppercase tracking-widest mb-3">{label}</p>
-        {loading || price === undefined ? (
-          <div className="h-8 w-28 bg-slate-700 rounded animate-pulse" />
-        ) : (
-          <>
-            <p className={`text-3xl font-semibold tabular-nums ${color}`}>${price?.toFixed(2)}</p>
-            <div className="flex items-center gap-1.5 mt-2">
-              {changePill(change ?? 0)}
-              <span className="text-slate-500 text-xs">24h</span>
-            </div>
-          </>
-        )}
+        {loading || price === undefined
+          ? <div className="h-8 w-28 bg-slate-700 rounded animate-pulse" />
+          : <>
+              <p className={`text-3xl font-semibold tabular-nums ${color}`}>${price?.toFixed(2)}</p>
+              <div className="flex items-center gap-1.5 mt-2">{changePill(change ?? 0)}<span className="text-slate-500 text-xs">24h</span></div>
+            </>}
         <p className="text-slate-600 text-xs mt-3">USD / barrel · {prices?.source ?? "—"}</p>
       </div>
     ))}
@@ -81,21 +67,18 @@ const SpotPricePanel: React.FC<{ prices: PricesResponse | null; loading: boolean
 // ── Panel 2: Supplier Ranking ─────────────────────────────────────────────────
 
 const SupplierRankingTable: React.FC<{ options: ProcurementOption[] }> = ({ options }) => {
-  const ranked = [...options]
-    .filter((o) => o.status !== "BLOCKED")
-    .sort((a, b) => b.confidence - a.confidence);
-
+  const ranked = [...options].filter((o) => o.status !== "BLOCKED").sort((a, b) => b.confidence - a.confidence);
   return (
     <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
       <div className="px-5 py-4 border-b border-slate-700">
         <h2 className="text-white text-sm font-medium">Supplier Alternatives</h2>
-        <p className="text-slate-500 text-xs mt-0.5">Ranked by confidence score — approved and partial options only</p>
+        <p className="text-slate-500 text-xs mt-0.5">Ranked by confidence — approved and partial options only</p>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-slate-700">
-              {["#", "Supplier", "Grade", "Status", "Confidence", "Route", "Cost Δ ($/bbl)", "Lead Time"].map((h) => (
+              {["#","Supplier","Grade","Status","Confidence","Route","Cost Δ ($/bbl)","Lead Time"].map((h) => (
                 <th key={h} className="text-left text-slate-500 text-xs font-medium px-5 py-3 whitespace-nowrap">{h}</th>
               ))}
             </tr>
@@ -121,9 +104,7 @@ const SupplierRankingTable: React.FC<{ options: ProcurementOption[] }> = ({ opti
             ))}
           </tbody>
         </table>
-        {ranked.length === 0 && (
-          <p className="text-slate-500 text-sm text-center py-10">No viable options available</p>
-        )}
+        {ranked.length === 0 && <p className="text-slate-500 text-sm text-center py-10">No viable options</p>}
       </div>
     </div>
   );
@@ -135,7 +116,7 @@ const ContractHeadroomPanel: React.FC = () => (
   <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
     <div className="px-5 py-4 border-b border-slate-700">
       <h2 className="text-white text-sm font-medium">Contract Headroom</h2>
-      <p className="text-slate-500 text-xs mt-0.5">Used vs. maximum contracted volume (Mb/d) — MoPNG diversification policy</p>
+      <p className="text-slate-500 text-xs mt-0.5">Used vs. maximum contracted volume (Mb/d)</p>
     </div>
     <div className="p-5 space-y-5">
       {CONTRACT_HEADROOM.map(({ supplier, used_mbd, max_mbd, grade }) => {
@@ -150,9 +131,7 @@ const ContractHeadroomPanel: React.FC = () => (
                 <span className="text-slate-500 text-xs">{grade}</span>
               </div>
               <div className="flex items-center gap-3">
-                <span className="text-slate-400 text-xs tabular-nums">
-                  {used_mbd.toFixed(2)} / {max_mbd.toFixed(2)} Mb/d
-                </span>
+                <span className="text-slate-400 text-xs tabular-nums">{used_mbd.toFixed(2)} / {max_mbd.toFixed(2)} Mb/d</span>
                 {nearCap && <span className="text-xs text-red-400 font-medium">Near cap</span>}
               </div>
             </div>
@@ -171,87 +150,34 @@ const ContractHeadroomPanel: React.FC = () => (
   </div>
 );
 
-// ── Panel 4: Rejection Trace ──────────────────────────────────────────────────
-
-const RejectionTraceTable: React.FC<{ options: ProcurementOption[]; evaluatedAt: string }> = ({ options, evaluatedAt }) => (
-  <div className="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden">
-    <div className="px-5 py-4 border-b border-slate-700 flex items-start justify-between">
-      <div>
-        <h2 className="text-white text-sm font-medium">Evaluation Trace</h2>
-        <p className="text-slate-500 text-xs mt-0.5">Every option evaluated this cycle — full audit trail</p>
-      </div>
-      <span className="text-slate-600 text-xs tabular-nums mt-0.5">
-        {new Date(evaluatedAt).toLocaleTimeString()}
-      </span>
-    </div>
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b border-slate-700">
-            {["Supplier", "Grade", "Status", "Rule Triggered", "Detail", "Source"].map((h) => (
-              <th key={h} className="text-left text-slate-500 text-xs font-medium px-5 py-3 whitespace-nowrap">{h}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {options.map((opt) => (
-            <tr key={opt.option_id} className="border-b border-slate-700/50 hover:bg-slate-700/20 transition-colors">
-              <td className="px-5 py-3.5 text-white font-medium whitespace-nowrap">{opt.supplier}</td>
-              <td className="px-5 py-3.5 text-slate-300 whitespace-nowrap">{opt.crude_grade}</td>
-              <td className="px-5 py-3.5 whitespace-nowrap"><span className={statusBadge(opt.status)}>{opt.status}</span></td>
-              <td className="px-5 py-3.5 whitespace-nowrap">
-                {opt.rule_triggered
-                  ? <span className="text-xs font-mono bg-slate-900 text-slate-300 px-2 py-0.5 rounded border border-slate-700">{opt.rule_triggered}</span>
-                  : <span className="text-slate-600 text-xs">—</span>}
-              </td>
-              <td className="px-5 py-3.5 text-slate-400 text-xs max-w-xs">
-                {opt.reason
-                  ? <>
-                      {opt.reason.value}
-                      {opt.reason.threshold && <span className="text-slate-600"> · threshold: {opt.reason.threshold}</span>}
-                    </>
-                  : <span className="text-green-500 text-xs">All checks passed</span>}
-              </td>
-              <td className="px-5 py-3.5 text-slate-600 text-xs font-mono whitespace-nowrap">{opt.reason?.source ?? "—"}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-    <div className="px-5 py-3 border-t border-slate-700 flex items-center gap-6">
-      {(["APPROVED", "PARTIAL", "BLOCKED"] as const).map((s) => {
-        const count = options.filter((o) => o.status === s).length;
-        const color = s === "APPROVED" ? "text-green-400" : s === "PARTIAL" ? "text-amber-400" : "text-red-400";
-        return <span key={s} className={`text-xs ${color}`}>{count} {s.toLowerCase()}</span>;
-      })}
-      <span className="text-slate-600 text-xs ml-auto">{options.length} total evaluated</span>
-    </div>
-  </div>
-);
-
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 const ProcurementPage: React.FC = () => {
+  const { playbookReady } = useAppContext();
+  const navigate = useNavigate();
   const [procurement, setProcurement] = useState<ProcurementResponse | null>(null);
   const [prices, setPrices]           = useState<PricesResponse | null>(null);
   const [loading, setLoading]         = useState(true);
 
   useEffect(() => {
-    Promise.all([getProcurementOptions(), getLivePrices()]).then(([p, pr]) => {
-      setProcurement(p);
-      setPrices(pr);
-      setLoading(false);
-    });
+    Promise.all([getProcurementOptions(), getLivePrices()])
+      .then(([p, pr]) => { setProcurement(p); setPrices(pr); })
+      .finally(() => setLoading(false));
   }, []);
 
   return (
     <div className="min-h-screen bg-slate-900 p-8">
-      {/* Header */}
       <div className="mb-8 flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-medium text-white">Procurement Operations</h1>
           <p className="text-slate-400 text-sm mt-1">Supply alternatives · Contract headroom · Evaluation trace</p>
         </div>
+        <button
+          onClick={() => navigate("/playbook")}
+          className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-lg transition-colors"
+        >
+          View Playbook →
+        </button>
         {procurement && (
           <div className="text-right">
             <p className="text-slate-500 text-xs">Surviving corridors</p>
@@ -266,31 +192,26 @@ const ProcurementPage: React.FC = () => {
         )}
       </div>
 
-      {/* Panel 1 — Spot Prices */}
       <section className="mb-6">
         <p className="text-slate-500 text-xs uppercase tracking-widest mb-3">Spot Prices</p>
         <SpotPricePanel prices={prices} loading={loading} />
       </section>
 
-      {/* Panel 2 — Supplier Ranking */}
       <section className="mb-6">
-        {loading
-          ? <div className="h-48 bg-slate-800 rounded-xl border border-slate-700 animate-pulse" />
+        {loading ? <div className="h-48 bg-slate-800 rounded-xl border border-slate-700 animate-pulse" />
           : <SupplierRankingTable options={procurement?.options ?? []} />}
       </section>
 
-      {/* Panel 3 — Contract Headroom */}
       <section className="mb-6">
         <ContractHeadroomPanel />
       </section>
 
-      {/* Panel 4 — Rejection Trace */}
       <section className="mb-6">
-        {loading
-          ? <div className="h-48 bg-slate-800 rounded-xl border border-slate-700 animate-pulse" />
-          : <RejectionTraceTable
+        {loading ? <div className="h-48 bg-slate-800 rounded-xl border border-slate-700 animate-pulse" />
+          : <RejectionTraceAnimation
               options={procurement?.options ?? []}
-              evaluatedAt={procurement?.evaluated_at ?? new Date().toISOString()}
+              autoPlay={true}
+              replayTrigger={playbookReady}
             />}
       </section>
     </div>
