@@ -70,12 +70,6 @@ services:
       - "8001:8000"
     volumes:
       - chromadb_data:/chroma/chroma
-    healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8000/api/v2/heartbeat || wget --no-verbose --tries=1 --spider http://localhost:8000/api/v1/heartbeat || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 20s
     networks:
       - resichain_network
 
@@ -89,16 +83,14 @@ services:
       - .env
     ports:
       - "8000:8000"
-    volumes:
-      - ./backend:/app
     depends_on:
+      chromadb:
+        condition: service_started
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
       neo4j:
-        condition: service_healthy
-      chromadb:
         condition: service_healthy
     networks:
       - resichain_network

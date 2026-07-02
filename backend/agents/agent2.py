@@ -12,6 +12,7 @@ after exponential backoff failures.
 from __future__ import annotations
 
 import asyncio
+import ast
 import json
 import logging
 import os
@@ -34,6 +35,7 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", os.getenv("GEMINIMODEL", "gemini-2.5-fl
 STREAM_IN = "eventsverified"
 CONSUMER_GROUP = "agent2consumers"
 CONSUMER_NAME = os.getenv("AGENT2_CONSUMER_NAME", "agent2-worker")
+DLQ_STREAM = "eventsverified_dlq"
 
 MAX_RETRIES = 3
 POLL_BLOCK_MS = 5000
@@ -52,10 +54,15 @@ _REQUIRED_FIELDS = {
 }
 
 
+def init_chromadb() -> None:
+    init_chroma()
+    logger.info("Agent 2 ChromaDB initialized")
+
+
 def startup() -> None:
     global _gemini_model
 
-    init_chroma()
+    init_chromadb()
 
     if GEMINI_API_KEY:
         genai.configure(api_key=GEMINI_API_KEY)
@@ -227,8 +234,63 @@ def _ensure_consumer_group(r: redis.Redis) -> None:
             raise
 
 
+def _normalize_fields(fields: dict[str, Any]) -> dict[str, Any]:
+    normalized: dict[str, Any] = {}
+    for k, v in fields.items():
+        key = k.decode() if isinstance(k, bytes) else k
+        value = v.decode() if isinstance(v, bytes) else v
+        normalized[key] = value
+    return normalized
+
+
+def _parse_event_payload(fields: dict[str, Any]) -> dict[str, Any]:
+    fields = _normalize_fields(fields)
+
+    raw = fields.get("data")
+    if raw:
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            try:
+                parsed = ast.literal_eval(raw)
+                if isinstance(parsed, dict):
+                    logger.warning("Parsed legacy pseudo-JSON payload via ast.literal_eval")
+                    return parsed
+            except Exception:
+                pass
+            raise ValueError(f"Invalid JSON in 'data' field: {raw[:200]}")
+
+    direct_keys = {"event", "eventid", "event_id", "source", "corridor", "stage", "confidence"}
+    if direct_keys.intersection(fields.keys()):
+        return fields
+
+    raise ValueError(f"Missing supported event payload. Available fields: {list(fields.keys())}")
+
+
+def _send_to_dlq(r: redis.Redis, msg_id: str, fields: dict[str, Any], error: str) -> None:
+    payload = _normalize_fields(fields)
+    payload["original_msg_id"] = msg_id
+    payload["error"] = error
+    payload["failed_at"] = datetime.now(timezone.utc).isoformat()
+    r.xadd(DLQ_STREAM, payload)
+
+
 async def run_agent2() -> None:
-    logger.info("Agent 2 started stream=%s group=%s consumer=%s", STREAM_IN, CONSUMER_GROUP, CONSUMER_NAME)
+    global _gemini_model
+
+    if GEMINI_API_KEY and _gemini_model is None:
+        genai.configure(api_key=GEMINI_API_KEY)
+        _gemini_model = genai.GenerativeModel(GEMINI_MODEL)
+        logger.info("Agent 2 Gemini initialized model=%s", GEMINI_MODEL)
+    elif not GEMINI_API_KEY:
+        logger.warning("Gemini API key missing. Agent 2 will use fallback if needed.")
+
+    logger.info(
+        "Agent 2 started stream=%s group=%s consumer=%s",
+        STREAM_IN,
+        CONSUMER_GROUP,
+        CONSUMER_NAME,
+    )
 
     r = _get_redis()
     _ensure_consumer_group(r)
@@ -250,9 +312,7 @@ async def run_agent2() -> None:
             for _stream_name, entries in messages:
                 for msg_id, fields in entries:
                     try:
-                        raw = fields.get("data", "{}")
-                        event = json.loads(raw)
-
+                        event = _parse_event_payload(fields)
                         result = await extract_intelligence(event)
 
                         logger.info(
@@ -268,6 +328,20 @@ async def run_agent2() -> None:
 
                     except Exception as exc:
                         logger.exception("Failed processing msg_id=%s error=%s", msg_id, exc)
+                        try:
+                            _send_to_dlq(r, msg_id, fields, str(exc))
+                            r.xack(STREAM_IN, CONSUMER_GROUP, msg_id)
+                            logger.warning(
+                                "Moved malformed/failed message to DLQ stream=%s msg_id=%s",
+                                DLQ_STREAM,
+                                msg_id,
+                            )
+                        except Exception as dlq_exc:
+                            logger.exception(
+                                "Failed sending msg_id=%s to DLQ error=%s",
+                                msg_id,
+                                dlq_exc,
+                            )
 
             await asyncio.sleep(0)
 

@@ -34,10 +34,10 @@ _embedder: SentenceTransformer | None = None
 
 
 def init_chroma() -> None:
-    global _chroma_client, _collection, _embedder
+    global _chroma_client, _collection
 
     _chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
-    _embedder = SentenceTransformer(EMBEDDING_MODEL_NAME)
+
 
     _collection = _chroma_client.get_or_create_collection(
         name=COLLECTION_NAME,
@@ -69,8 +69,9 @@ def get_collection():
 
 
 def get_embedder():
+    global _embedder
     if _embedder is None:
-        raise RuntimeError("Embedder not initialized. Call init_chroma() first.")
+        _embedder = SentenceTransformer(EMBEDDING_MODEL_NAME)
     return _embedder
 
 
@@ -166,8 +167,15 @@ def _distance_to_similarity(distance: float) -> float:
 def query_similar(text: str, n_results: int = 3) -> list[dict[str, Any]]:
     collection = get_collection()
 
-    if collection.count() == 0:
+    count = collection.count()
+    if count == 0:
         return []
+
+    results = collection.query(
+        query_embeddings=[query_embedding],
+        n_results=min(n_results, count),
+        include=["documents", "metadatas", "distances"],
+    )
 
     query_embedding = embed_text(text)
     results = collection.query(
