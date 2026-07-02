@@ -275,7 +275,7 @@ def seed_relationships(tx):
 
 
 def main():
-    with driver.session(database="f7b0e1d6") as session:
+    with driver.session(database=os.getenv("NEO4J_DATABASE", "neo4j")) as session:
         session.execute_write(create_constraints)
         session.execute_write(seed_suppliers)
         session.execute_write(seed_crude_grades)
