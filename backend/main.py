@@ -77,7 +77,7 @@ async def lifespan(app: FastAPI):
 
     # 5. Start background scheduler
     # Agent 1 polling will be added here once built
-    from agents.agent1_ingestion import run_agent1_poll, download_and_store_ofac
+    from agents.agent1_ingestion import run_agent1_poll
     from agents.clients.ofac_client import download_and_store_ofac as ofac_download
     from agents.agent1_verification import run_verification_cycle, run_event_expiry
     from agents.agent3_risk_engine import run_agent3 

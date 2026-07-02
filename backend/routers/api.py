@@ -447,3 +447,40 @@ async def get_verified_events_debug(limit: int = 10):
         "verified_events": rows,
         "total": len(rows)
     } 
+
+# POST /api/procurement/evaluate  (Day 8)
+@router.post("/procurement/evaluate")
+async def trigger_procurement_evaluation(body: dict = {}):
+    """
+    Manually triggers Agent 6's full procurement evaluation cycle.
+    Runs the rejection-retry loop through Agent 7 for every surviving
+    supplier and returns the ranked APPROVED/PARTIAL list plus the
+    full rejection trace (including BLOCKED options with reasons).
+ 
+    Optional body: {"playbook_id": "<uuid>"} to tie evaluations to a playbook.
+    """
+    from agents.agent6 import run_agent6
+    playbook_id = body.get("playbook_id")
+    result = await run_agent6(playbook_id=playbook_id)
+    return result
+ 
+ 
+# GET /api/procurement/last-run  (Day 8)
+@router.get("/procurement/last-run")
+async def get_last_procurement_run():
+    """Returns the cached result of the most recent Agent 6 run."""
+    from db.redis_client import get_redis
+    import json
+ 
+    try:
+        r = await get_redis()
+        cached = await r.get("agent6:last_run")
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        pass
+ 
+    return {
+        "status": "no_run_yet",
+        "message": "Agent 6 has not run yet. Trigger via POST /api/procurement/evaluate"
+    } 
