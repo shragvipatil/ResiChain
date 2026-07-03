@@ -10,6 +10,7 @@ import redis.asyncio as aioredis
 import os
 import json
 import logging
+import asyncio
 
 from db.postgres_queries import init_db
 from db.redis_client import get_redis, init_redis_streams
@@ -72,8 +73,22 @@ async def lifespan(app: FastAPI):
     await init_neo4j()
     logger.info("Neo4j connected")
 
-    # 4. ChromaDB — disabled temporarily, will re-add later
-    logger.info("ChromaDB skipped for now") 
+    # 4. Initialise Agent 2 / ChromaDB
+    agent2_task = None
+    try:
+        from agents.agent2 import init_chromadb, run_agent2
+
+        init_chromadb()
+        logger.info("Agent 2 ChromaDB initialised")
+
+        agent2_task = asyncio.create_task(run_agent2())
+        logger.info("Agent 2 background loop started")
+
+    except Exception as e:
+        logger.error(
+            f"Agent 2 startup failed: {e}. Continuing without Agent 2."
+        )
+
 
     # 5. Start background scheduler
     # Agent 1 polling will be added here once built
@@ -171,6 +186,14 @@ async def lifespan(app: FastAPI):
 
     # --- Shutdown ---
     logger.info("ResiChain shutting down...")
+
+    if agent2_task is not None:
+        agent2_task.cancel()
+        try:
+            await agent2_task
+        except asyncio.CancelledError:
+            logger.info("Agent 2 background task cancelled")
+
     scheduler.shutdown()
     logger.info("Scheduler stopped")
 

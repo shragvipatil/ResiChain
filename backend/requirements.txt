@@ -43,7 +43,7 @@ feedparser
 pandas
 numpy
 scipy
-
+torch
 # Auth
 python-jose[cryptography]
 passlib[bcrypt]
