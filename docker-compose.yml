@@ -69,9 +69,13 @@ services:
     ports:
       - "8001:8000"
     volumes:
-      - chromadb_data:/data
+      - chromadb_data:/chroma/chroma
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import socket; s=socket.socket(); s.settimeout(2); s.connect(('localhost', 8000)); s.close()\""]
+      # Shell-only TCP check — the chromadb/chroma image has neither curl
+      # nor python available, so an HTTP-based healthcheck fails with
+      # "executable file not found" regardless of whether Chroma itself
+      # is healthy. This just confirms port 8000 is accepting connections.
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8000 && exit 0 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -89,6 +93,8 @@ services:
       - .env
     ports:
       - "8000:8000"
+    volumes:
+      - ./backend:/app
     depends_on:
       chromadb:
         condition: service_started
@@ -110,4 +116,4 @@ volumes:
 
 networks:
   resichain_network:
-    driver: bridge
+    driver: bridge 
