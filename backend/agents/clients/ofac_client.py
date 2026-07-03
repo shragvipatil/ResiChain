@@ -123,4 +123,4 @@ async def check_supplier_sanctions(supplier_name: str) -> dict:
 
     except Exception as e:
         logger.error(f"OFAC check error: {e}")
-        return {"sanctioned": False, "programs": [], "error": str(e)}
+        return {"sanctioned": False, "programs": [], "error": str(e)} 
