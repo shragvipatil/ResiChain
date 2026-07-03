@@ -1,28 +1,3 @@
-"""
-agents/agent5.py
-================
-ResiChain AI v2.0 — Agent 5: SPR Optimization (LP Solver)
-
-Purpose:
-    Solve the optimal 30-day daily SPR drawdown schedule using linear
-    programming (scipy.optimize.linprog). Minimises the weighted sum of
-    SPR depletion cost and import spot-premium cost.
-
-Architecture:
-    - Triggered by LangGraph crisis mode (corridor risk > 0.65).
-    - Runs TWICE per crisis cycle (Fix 7):
-        • First run: parallel with Agent 6, using all surviving routes.
-        • Second run: after Agent 6/7 approval, using only approved cargoes.
-    - Reads live data from Neo4j (SPR), EIA (consumption), Redis (prices).
-    - Writes every solved schedule to PostgreSQL sprschedules table.
-    - Fix 5: infeasibility fallback — NEVER returns nothing.
-
-Fix 5 (mandatory):
-    When result.status == 2 (infeasible), return a max-drawdown fallback
-    schedule with confidence=0.0 and a critical_warning string.
-    Agent 8 must display this as a red critical banner in the playbook.
-"""
-
 from __future__ import annotations
 
 import json
@@ -40,21 +15,12 @@ from db.neo4j_queries import get_spr_total_volume
 from db.postgres_queries import get_latest_price_history, insert_spr_schedule
 
 load_dotenv()
-
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Constants — all overridable via .env
-# ---------------------------------------------------------------------------
-
 HORIZON_DAYS: int = 30
-MAX_DAILY_RELEASE_MBD: float = float(os.getenv("SPR_MAX_DAILY_RELEASE_MBD", "0.5"))
-SPR_RESERVE_FLOOR_PCT: float = float(os.getenv("SPR_RESERVE_FLOOR_PCT", "0.40"))
-INDIA_DAILY_CONSUMPTION_MBD: float = 5.1
-
-# ---------------------------------------------------------------------------
-# Redis helper
-# ---------------------------------------------------------------------------
+MAX_DAILY_RELEASE_MBD: float = float(os.getenv("SPRMAXDAILYRELEASEMBD", os.getenv("SPR_MAX_DAILY_RELEASE_MBD", "0.5")))
+SPR_RESERVE_FLOOR_PCT: float = float(os.getenv("SPRRESERVEFLOORPCT", os.getenv("SPR_RESERVE_FLOOR_PCT", "0.40")))
+EMERGENCY_DAILY_CONSUMPTION_MBD: float = float(os.getenv("INDIA_DAILY_CONSUMPTION_MBD", "5.1"))
 
 _redis_client: Optional[redis_lib.Redis] = None
 
@@ -63,24 +29,45 @@ def _get_redis() -> redis_lib.Redis:
     global _redis_client
     if _redis_client is None:
         _redis_client = redis_lib.from_url(
-            os.getenv("REDIS_URL", "redis://redis:6379/0"),
+            os.getenv("REDISURL", os.getenv("REDIS_URL", "redis://redis:6379/0")),
             decode_responses=True,
         )
     return _redis_client
 
 
-# ---------------------------------------------------------------------------
-# Live-data helpers
-# ---------------------------------------------------------------------------
+def _extract_brent_price(raw: str) -> Optional[float]:
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return None
+
+    candidates = [
+        data.get("brent_usd"),
+        data.get("brent"),
+        data.get("Brent"),
+        data.get("price") if isinstance(data.get("brent"), dict) else None,
+    ]
+    brent_obj = data.get("brent")
+    if isinstance(brent_obj, dict):
+        candidates.append(brent_obj.get("price"))
+
+    for value in candidates:
+        try:
+            price = float(value)
+            if price > 0:
+                return price
+        except Exception:
+            continue
+    return None
+
 
 def _get_spot_premium() -> float:
     """
-    Fetch Brent price from Redis live cache.
-    Fallback chain:
-      1. Redis priceslive
-      2. Redis prices:live (legacy-tolerant)
-      3. PostgreSQL pricehistory latest
-      4. Static last-resort 85.0
+    Price fallback chain per project intent:
+    1. Redis priceslive
+    2. Redis prices:live (legacy-tolerant)
+    3. PostgreSQL latest pricehistory
+    4. Env-configurable emergency fallback
     """
     try:
         r = _get_redis()
@@ -88,17 +75,11 @@ def _get_spot_premium() -> float:
             raw = r.get(key)
             if not raw:
                 continue
-            data = json.loads(raw)
-            price = float(
-                data.get("brent_usd")
-                or data.get("brent")
-                or data.get("Brent")
-                or 0.0
-            )
-            if price > 0:
+            price = _extract_brent_price(raw)
+            if price is not None:
                 return price
     except Exception as exc:
-        logger.warning("Redis price read failed in Agent 5: %s", exc)
+        logger.warning("Redis Brent price read failed in Agent 5: %s", exc)
 
     try:
         row = get_latest_price_history()
@@ -107,19 +88,23 @@ def _get_spot_premium() -> float:
             if price > 0:
                 return price
     except Exception as exc:
-        logger.warning("PostgreSQL price fallback failed in Agent 5: %s", exc)
+        logger.warning("PostgreSQL Brent fallback failed in Agent 5: %s", exc)
 
-    return 85.0
+    emergency = float(os.getenv("EMERGENCY_BRENT_FALLBACK_USD", "85.0"))
+    logger.warning("Agent 5 using emergency Brent fallback: %.2f", emergency)
+    return emergency
 
 
 def _get_india_consumption() -> float:
-    """Fetch India daily consumption from EIA API, else use fallback."""
+    """
+    Prefer live EIA; tolerate both EIAAPIKEY and EIA_API_KEY env names.
+    """
     try:
         import requests
 
-        key = os.getenv("EIA_API_KEY", "")
+        key = os.getenv("EIAAPIKEY", os.getenv("EIA_API_KEY", ""))
         if not key:
-            raise ValueError("EIA_API_KEY not set")
+            raise ValueError("EIA API key not set")
 
         url = (
             "https://api.eia.gov/v2/international/data/"
@@ -143,16 +128,12 @@ def _get_india_consumption() -> float:
         return annual_value / 365.0
     except Exception as exc:
         logger.warning(
-            "EIA consumption fetch failed: %s — using %.2f",
+            "EIA consumption fetch failed in Agent 5: %s — using emergency fallback %.2f",
             exc,
-            INDIA_DAILY_CONSUMPTION_MBD,
+            EMERGENCY_DAILY_CONSUMPTION_MBD,
         )
-        return INDIA_DAILY_CONSUMPTION_MBD
+        return EMERGENCY_DAILY_CONSUMPTION_MBD
 
-
-# ---------------------------------------------------------------------------
-# Persistence helper
-# ---------------------------------------------------------------------------
 
 def _persist_schedule(
     *,
@@ -164,11 +145,6 @@ def _persist_schedule(
     infeasibility_warning: Optional[str],
     inputs_used: Dict[str, Any],
 ) -> Any:
-    """
-    Persist Agent 5 output.
-    Expected target is the sprschedules table; this wrapper also passes the
-    audit input payload so scenarios can be compared later.
-    """
     try:
         return insert_spr_schedule(
             playbook_id=playbook_id,
@@ -190,20 +166,11 @@ def _persist_schedule(
         )
 
 
-# ---------------------------------------------------------------------------
-# Infeasibility fallback (Fix 5)
-# ---------------------------------------------------------------------------
-
 def _infeasibility_fallback(
     spr_total_mb: float,
     playbook_id: Optional[UUID],
     inputs_used: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """
-    Fix 5: When LP is infeasible, return a max-drawdown schedule.
-    confidence=0.0, critical_warning must be displayed as red banner
-    by Agent 8.
-    """
     schedule = [round(MAX_DAILY_RELEASE_MBD, 4)] * HORIZON_DAYS
     total_drawdown = round(sum(schedule), 4)
     spr_remaining = round(max(0.0, spr_total_mb - total_drawdown), 2)
@@ -211,8 +178,6 @@ def _infeasibility_fallback(
         "Supply gap exceeds combined SPR and import capacity. "
         "Emergency rationing required."
     )
-
-    logger.critical("Agent 5 LP infeasible — returning fallback. %s", warning)
 
     audit_inputs = dict(inputs_used or {})
     audit_inputs["fallback_triggered"] = True
@@ -240,10 +205,6 @@ def _infeasibility_fallback(
     }
 
 
-# ---------------------------------------------------------------------------
-# Core LP solver
-# ---------------------------------------------------------------------------
-
 def solve_spr_schedule(
     available_imports_mbd: Optional[List[float]] = None,
     spr_total_mb: Optional[float] = None,
@@ -252,20 +213,6 @@ def solve_spr_schedule(
     playbook_id: Optional[UUID] = None,
     approved_cargo_schedule: Optional[List[float]] = None,
 ) -> Dict[str, Any]:
-    """
-    Solve the 30-day SPR drawdown schedule using scipy.optimize.linprog.
-
-    Decision variables:
-        x[t] = daily SPR drawdown for each of 30 days.
-
-    Objective:
-        Minimise weighted SPR depletion cost + import premium exposure proxy.
-
-    Constraints:
-        1. x[t] <= 0.5 mb/day physical limit
-        2. sum(x[t]) <= 60% of total SPR volume (keep 40% reserve)
-        3. x[t] + imports[t] >= demand[t] for each day
-    """
     if spr_total_mb is None:
         spr_total_mb = float(get_spr_total_volume())
     if daily_consumption_mbd is None:
@@ -319,11 +266,6 @@ def solve_spr_schedule(
             inputs_used=inputs_used,
         )
 
-    # Weighted linear objective:
-    # - base depletion cost = 1.0 per barrel drawn
-    # - import premium proxy scales with current price level
-    # This keeps the objective linear while reflecting higher cost pressure
-    # when market prices are elevated.
     premium_weight = max(0.0, float(spot_premium_usd) / 100.0)
     time_weight = np.array([1.0 + (t * 0.002) for t in range(n)], dtype=float)
     c = (1.0 + premium_weight) * time_weight
@@ -358,23 +300,7 @@ def solve_spr_schedule(
         method="highs",
     )
 
-    if result.status == 2:
-        logger.warning("Agent 5 linprog returned infeasible (status=2)")
-        return _infeasibility_fallback(
-            spr_total_mb=float(spr_total_mb),
-            playbook_id=playbook_id,
-            inputs_used=inputs_used,
-        )
-
-    if result.status != 0:
-        logger.warning(
-            "Agent 5 linprog non-optimal status=%d (%s)",
-            result.status,
-            result.message,
-        )
-
-    if result.x is None:
-        logger.warning("Agent 5 linprog returned no solution vector; using fallback")
+    if result.status == 2 or result.x is None:
         return _infeasibility_fallback(
             spr_total_mb=float(spr_total_mb),
             playbook_id=playbook_id,
@@ -385,12 +311,7 @@ def solve_spr_schedule(
     total_drawdown = round(sum(schedule), 4)
     spr_remaining = round(max(0.0, float(spr_total_mb) - total_drawdown), 2)
 
-    status_confidence_map = {
-        0: 1.0,
-        1: 0.6,
-        3: 0.3,
-        4: 0.5,
-    }
+    status_confidence_map = {0: 1.0, 1: 0.6, 3: 0.3, 4: 0.5}
     confidence = float(status_confidence_map.get(result.status, 0.5))
 
     record_id = _persist_schedule(
@@ -401,13 +322,6 @@ def solve_spr_schedule(
         spr_remaining_mb=spr_remaining,
         infeasibility_warning=None,
         inputs_used=inputs_used,
-    )
-
-    logger.info(
-        "Agent 5 solved: drawdown=%.3f mb, remaining=%.2f mb, confidence=%.2f",
-        total_drawdown,
-        spr_remaining,
-        confidence,
     )
 
     return {
@@ -425,22 +339,7 @@ def solve_spr_schedule(
     }
 
 
-# ---------------------------------------------------------------------------
-# LangGraph node entry point
-# ---------------------------------------------------------------------------
-
 def run_agent5(state: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    LangGraph node function for Agent 5.
-
-    Reads from LangGraph state:
-        - surviving_routes_mbd : list[float] day-by-day import volume
-        - approved_cargoes_mbd : list[float] (present on re-run, Fix 7)
-        - playbook_id          : UUID or None
-
-    Writes to LangGraph state:
-        - spr_schedule         : full solve_spr_schedule() output dict
-    """
     logger.info("Agent 5 starting SPR LP optimisation")
 
     available_imports = state.get("surviving_routes_mbd")
@@ -452,5 +351,4 @@ def run_agent5(state: Dict[str, Any]) -> Dict[str, Any]:
         approved_cargo_schedule=approved_cargoes,
         playbook_id=playbook_id,
     )
-
     return {**state, "spr_schedule": result}
