@@ -69,7 +69,13 @@ services:
     ports:
       - "8001:8000"
     volumes:
-      - chromadb_data:/chroma/chroma
+      - chromadb_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import socket; s=socket.socket(); s.settimeout(2); s.connect(('localhost', 8000)); s.close()\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     networks:
       - resichain_network
 

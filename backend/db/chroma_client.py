@@ -171,16 +171,10 @@ def query_similar(text: str, n_results: int = 3) -> list[dict[str, Any]]:
     if count == 0:
         return []
 
-    results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=min(n_results, count),
-        include=["documents", "metadatas", "distances"],
-    )
-
     query_embedding = embed_text(text)
     results = collection.query(
         query_embeddings=[query_embedding],
-        n_results=min(n_results, collection.count()),
+        n_results=min(n_results, count),
         include=["documents", "metadatas", "distances"],
     )
 
