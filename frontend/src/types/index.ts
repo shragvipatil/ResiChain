@@ -240,3 +240,71 @@ export interface LoginResponse {
   // httpOnly cookie via Set-Cookie header. It is never exposed to JS.
   requires_totp?: boolean;  // true if password was correct but TOTP still needed
 }
+// ── Refinery Operator types (Day 12) ──────────────────────────────────────────
+
+export interface GradeAvailability {
+  grade:         string;
+  status:        "available" | "disrupted" | "reduced";
+  volume_mbd:    number;
+  note?:         string;
+}
+
+export interface RefineryGradeInfo {
+  refinery_id:   string;
+  refinery_name: string;
+  grades:        GradeAvailability[];
+}
+
+export interface TankerETA {
+  vessel_name:    string;
+  vessel_type:    string;
+  origin:         string;
+  destination_port: string;
+  eta:            string;       // ISO timestamp
+  cargo_grade:    string;
+  volume_mbd:     number;
+  current_lat:    number;
+  current_lng:    number;
+  status:         "on_schedule" | "delayed" | "arrived";
+}
+
+export interface GradeSwitchOption {
+  refinery_id:      string;
+  refinery_name:    string;
+  from_grade:       string;
+  to_grade:         string;
+  feasible:         boolean;
+  reason:           string;      // e.g. "Coker unit required" or "Fully compatible"
+  switch_time_days?: number;
+}
+
+export interface DeliveryScheduleDay {
+  date:          string;   // ISO date
+  refinery_id:   string;
+  refinery_name: string;
+  grade:         string;
+  volume_mbd:    number;
+  source:        string;   // supplier name
+  confirmed:     boolean;
+}
+
+// ── Admin System Health types (Day 12) ────────────────────────────────────────
+
+export interface ExternalApiHealth {
+  name:               string;
+  last_success_at:    string | null;
+  status:             "healthy" | "degraded" | "down";
+  latency_ms?:         number;
+}
+
+export interface SystemHealth {
+  agents:               Record<string, { status: string; last_run: string | null }>;
+  redis_stream_depths:  Record<string, number>;
+  postgres_pool: {
+    active_connections: number;
+    max_connections:    number;
+    status:              "healthy" | "degraded";
+  };
+  external_apis:        ExternalApiHealth[];
+  crisis_mode_active:    boolean;
+}
