@@ -212,3 +212,31 @@ export interface KGraphData {
   nodes: KNode[];
   edges: KEdge[];
 }
+// ── Auth types (Day 11) ────────────────────────────────────────────────────────
+
+export type UserRole =
+  | "MINISTRY_USER"
+  | "PROCUREMENT_ANALYST"
+  | "REFINERY_OPERATOR"
+  | "VIEWER"
+  | "ADMIN";
+
+export interface User {
+  user_id:  string;
+  name:     string;
+  email:    string;
+  role:     UserRole;
+}
+
+export interface LoginRequest {
+  email:    string;
+  password: string;
+  totp_code?: string;   // required for ADMIN / MINISTRY_USER (2FA, Day 11 backend)
+}
+
+export interface LoginResponse {
+  user: User;
+  // No token field — the real access token is set server-side as an
+  // httpOnly cookie via Set-Cookie header. It is never exposed to JS.
+  requires_totp?: boolean;  // true if password was correct but TOTP still needed
+}

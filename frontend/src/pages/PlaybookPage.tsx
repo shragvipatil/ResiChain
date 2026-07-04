@@ -18,6 +18,7 @@
 
 import React, { useEffect, useState, useCallback } from "react";
 import { getPlaybook, approvePlaybook } from "../api/endpoints";
+import { apiClient } from "../api/client";
 import {
   Playbook, PlaybookAction, ActionDecision,
   PlaybookStatus, ApprovePlaybookRequest,
@@ -247,6 +248,9 @@ const ConfirmModal: React.FC<ConfirmModalProps> = ({ approved, rejected, pending
 
 const PlaybookPage: React.FC = () => {
   const DEMO_PLAYBOOK_ID = "pb_20240115_001";
+  // The PDF endpoint is real backend code (not mockable) — it always targets
+  // the backend's own demo playbook id, independent of the frontend USE_MOCK flag.
+  const BACKEND_PLAYBOOK_ID = "pb_001";
 
   const [playbook, setPlaybook]       = useState<Playbook | null>(null);
   const [loading, setLoading]         = useState(true);
@@ -254,6 +258,32 @@ const PlaybookPage: React.FC = () => {
   const [showModal, setShowModal]     = useState(false);
   const [submitting, setSubmitting]   = useState(false);
   const [submitted, setSubmitted]     = useState(false);
+  const [downloadingRole, setDownloadingRole] = useState<"ministry" | "procurement" | null>(null);
+  const [downloadError, setDownloadError]     = useState<string | null>(null);
+
+  const handleDownloadPdf = useCallback(async (role: "ministry" | "procurement") => {
+    setDownloadingRole(role);
+    setDownloadError(null);
+    try {
+      const res = await apiClient.get(
+        `/playbook/${BACKEND_PLAYBOOK_ID}/pdf`,
+        { params: { role }, responseType: "blob" }
+      );
+      const blob = new Blob([res.data], { type: "application/pdf" });
+      const url  = window.URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href     = url;
+      a.download = `resichain_${role}_${BACKEND_PLAYBOOK_ID}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch {
+      setDownloadError("Could not generate PDF — check backend connection");
+    } finally {
+      setDownloadingRole(null);
+    }
+  }, []);
 
   useEffect(() => {
     getPlaybook(DEMO_PLAYBOOK_ID).then((pb) => {
@@ -338,6 +368,41 @@ const PlaybookPage: React.FC = () => {
           </span>
         </div>
 
+        {/* PDF export buttons */}
+        <div className="flex items-center gap-2 mt-3">
+          <button
+            onClick={() => handleDownloadPdf("ministry")}
+            disabled={downloadingRole !== null}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-700
+              text-slate-300 text-xs hover:border-blue-600 hover:text-blue-400 transition-colors
+              disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {downloadingRole === "ministry" ? (
+              <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+              </svg>
+            ) : "↓"} Ministry PDF
+          </button>
+          <button
+            onClick={() => handleDownloadPdf("procurement")}
+            disabled={downloadingRole !== null}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-700
+              text-slate-300 text-xs hover:border-blue-600 hover:text-blue-400 transition-colors
+              disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {downloadingRole === "procurement" ? (
+              <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+              </svg>
+            ) : "↓"} Procurement PDF
+          </button>
+          {downloadError && (
+            <span className="text-red-400 text-xs">{downloadError}</span>
+          )}
+        </div>
+
         {/* ── Timestamp pair — the core demo claim ─────────────────────────── */}
         <div className="mt-5 bg-slate-800 border border-slate-700 rounded-xl p-4 flex items-center gap-8">
           <div>
@@ -408,7 +473,7 @@ const PlaybookPage: React.FC = () => {
             Decision submitted — playbook is now{" "}
             <span className="font-semibold">{statusConfig(playbook.status).label}</span>
           </p>
-          <p className="text-slate-500 text-xs mt-1">Logged to audit trail · PDF available for download on Day 10</p>
+          <p className="text-slate-500 text-xs mt-1">Logged to audit trail · use the PDF buttons above to export</p>
         </div>
       )}
     </div>
