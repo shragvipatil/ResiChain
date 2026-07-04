@@ -251,18 +251,10 @@ app.add_middleware(
 from routers.api import router as api_router
 app.include_router(api_router)
 
-# pdf_router.py doesn't exist in the repo yet (confirmed via Test-Path) —
-# someone added this import ahead of creating the actual file, or it
-# exists locally somewhere but never got committed/pushed. Wrapped
-# defensively so a missing/broken router file can't crash the entire
-# app the way it just did — same pattern as Agent 2's ChromaDB startup.
-# Remove this try/except once pdf_router.py actually exists in the repo.
-try:
-    from routers.pdf_router import router as pdf_router
-    app.include_router(pdf_router)
-    logger.info("PDF router loaded")
-except ModuleNotFoundError as e:
-    logger.warning(f"pdf_router not found, skipping: {e}")
+# pdf_router.py doesn't exist in the repo and isn't part of any spec
+# through Day 10 — removed the import someone added ahead of that work.
+# If/when PDF export actually gets built, add it back in with a real
+# router file, not a bare import that can crash the whole app.
 
 # ---- Health Check -------------------------------------------
 @app.get("/health", tags=["System"])
