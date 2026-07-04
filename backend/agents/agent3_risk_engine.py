@@ -4,13 +4,19 @@
 # Calculates corridor risk scores using 5 weighted factors
 # Stores live risk vector in Redis risk:state
 # Fix 8 applied: corridor_risk = min(1.0, raw_risk)
+#
+# UPDATED: swept all hardcoded Redis stream/key names to use the
+# centralized constants/helpers from db/redis_client.py, per Person B's
+# redis_client.py refactor. "agent3:last_run" and "brent:price:latest"
+# are left as-is — both are single-file keys only Agent 3 itself ever
+# reads/writes, so there's no cross-file naming risk to centralize.
 # ============================================================
 
 import json
 import math
 import logging
 from datetime import datetime
-from db.redis_client import get_redis
+from db.redis_client import get_redis, VERIFIED_EVENTS_STREAM, update_risk_state
 from db.postgres_queries import get_connection
 
 logger = logging.getLogger(__name__)
@@ -58,7 +64,7 @@ async def run_agent3():
 
     try:
         r = await get_redis()
-        results = await r.xread({"events:verified": "0"}, count=50)
+        results = await r.xread({VERIFIED_EVENTS_STREAM: "0"}, count=50)
 
         corridors_to_update = set()
 
@@ -80,7 +86,13 @@ async def run_agent3():
         risk_vector["updated_at"] = datetime.utcnow().isoformat()
         risk_vector["updated_corridors"] = list(corridors_to_update)
 
-        await r.setex("risk:state", 300, json.dumps(risk_vector))
+        # Uses the shared helper (RISK_STATE_KEY + RISK_CACHE_TTL_SECONDS
+        # applied internally) instead of a raw setex call — same key,
+        # same TTL, same behavior, just centralized.
+        await update_risk_state(risk_vector)
+
+        # "agent3:last_run" is Agent 3's own key, not read anywhere else —
+        # left as a local literal on purpose, per the single-file-key rule.
         await r.setex(
             "agent3:last_run",
             600,
@@ -161,7 +173,7 @@ async def _calculate_corridor_risk(corridor: str) -> float:
 async def _score_military_incidents(corridor: str) -> float:
     try:
         r = await get_redis()
-        results = await r.xrevrange("events:verified", count=20)
+        results = await r.xrevrange(VERIFIED_EVENTS_STREAM, count=20)
 
         score = 0.0
         for msg_id, msg_data in results:
@@ -187,7 +199,7 @@ async def _score_military_incidents(corridor: str) -> float:
 async def _score_conflict_escalation(corridor: str) -> float:
     try:
         r = await get_redis()
-        results = await r.xrevrange("events:verified", count=20)
+        results = await r.xrevrange(VERIFIED_EVENTS_STREAM, count=20)
 
         max_source_count = 0
         max_confidence = 0.0
@@ -259,7 +271,7 @@ def _score_seasonal_risk(corridor: str) -> float:
 async def _get_days_since_last_event(corridor: str) -> float:
     try:
         r = await get_redis()
-        results = await r.xrevrange("events:verified", count=50)
+        results = await r.xrevrange(VERIFIED_EVENTS_STREAM, count=50)
 
         for msg_id, msg_data in results:
             event = json.loads(msg_data["data"])
@@ -333,4 +345,4 @@ async def update_risk_weights(new_weights: dict) -> dict:
 
     new_risk_vector = await run_agent3()
     logger.info("Agent 3: Weights updated and risk recalculated")
-    return new_risk_vector
+    return new_risk_vector 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -49,9 +50,10 @@ def _get_redis() -> redis_lib.Redis:
 def _get_vessels_near_port(departure_port: str) -> int:
     try:
         r = _get_redis()
-        raw = r.get("vesselslive") or r.get("vessels:live")
+        raw = r.get("vessels:live") or r.get("vesselslive")
         if not raw:
             return 0
+
         vessels = json.loads(raw)
         count = 0
         for v in vessels:
@@ -64,7 +66,12 @@ def _get_vessels_near_port(departure_port: str) -> int:
 
 
 def _reason(rule: str, value: Any, threshold: Any = None, source: str = "") -> Dict[str, Any]:
-    return {"rule": rule, "value": value, "threshold": threshold, "source": source}
+    return {
+        "rule": rule,
+        "value": value,
+        "threshold": threshold,
+        "source": source,
+    }
 
 
 def _result(
@@ -122,7 +129,12 @@ def _layer2_grade_compatibility(candidate: Dict[str, Any]) -> Optional[Dict[str,
     try:
         compatible = check_grade_compatibility(grade, refinery)
     except Exception as exc:
-        return _reason("GRADE_COMPATIBILITY_CHECK_FAILED", str(exc), None, "neo4j:COMPATIBLEWITH")
+        return _reason(
+            "GRADE_COMPATIBILITY_CHECK_FAILED",
+            str(exc),
+            None,
+            "neo4j:COMPATIBLEWITH",
+        )
 
     if not compatible:
         return _reason(
@@ -142,16 +154,23 @@ class DiversificationTracker:
     def _ensure_loaded(self, supplier: str) -> None:
         if supplier in self._loaded_suppliers:
             return
+
         try:
             current = get_supplier_current_share(supplier)
         except Exception as exc:
             logger.error("Failed to load current share for %s: %s", supplier, exc)
             current = 0.0
+
         self.running_share[supplier] = float(current or 0.0)
         self._loaded_suppliers.add(supplier)
 
-    def check_and_apply(self, supplier: str, delta_share: float) -> tuple[Optional[Dict[str, Any]], float]:
+    def check_and_apply(
+        self,
+        supplier: str,
+        delta_share: float,
+    ) -> tuple[Optional[Dict[str, Any]], float]:
         self._ensure_loaded(supplier)
+
         current = self.running_share[supplier]
         projected = current + float(delta_share)
 
@@ -163,17 +182,18 @@ class DiversificationTracker:
                         "DIVERSIFICATION_CAP",
                         round(projected, 4),
                         MAX_SUPPLIER_SHARE_PCT,
-                        "PostgreSQL current_supplier_shares",
+                        "neo4j:get_supplier_current_share",
                     ),
                     0.0,
                 )
+
             self.running_share[supplier] = MAX_SUPPLIER_SHARE_PCT
             return (
                 _reason(
                     "DIVERSIFICATION_CAP",
                     round(projected, 4),
                     MAX_SUPPLIER_SHARE_PCT,
-                    "PostgreSQL current_supplier_shares",
+                    "neo4j:get_supplier_current_share",
                 ),
                 headroom,
             )
@@ -202,20 +222,40 @@ def _layer4_operational(candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         try:
             port_specs = get_port_specs(arrival_port)
         except Exception as exc:
-            return _reason("PORT_CAPACITY_CHECK_FAILED", str(exc), None, "neo4j:Port.max_vessel_dwt")
+            return _reason(
+                "PORT_CAPACITY_CHECK_FAILED",
+                str(exc),
+                None,
+                "neo4j:Port.max_vessel_dwt",
+            )
 
         max_dwt = float(port_specs.get("max_vessel_dwt", 0.0) or 0.0)
         if max_dwt > 0 and max_dwt < required_dwt:
-            return _reason("PORT_CAPACITY", required_dwt, max_dwt, "neo4j:Port.max_vessel_dwt")
+            return _reason(
+                "PORT_CAPACITY",
+                required_dwt,
+                max_dwt,
+                "neo4j:Port.max_vessel_dwt",
+            )
 
     available_vessels = _get_vessels_near_port(departure_port)
     if available_vessels < 1:
-        return _reason("TANKER_UNAVAILABLE", available_vessels, 1, "redis:vesselslive")
+        return _reason(
+            "TANKER_UNAVAILABLE",
+            available_vessels,
+            1,
+            "redis:vessels:live",
+        )
 
     try:
         headroom = get_contract_headroom(supplier)
     except Exception as exc:
-        return _reason("CONTRACT_HEADROOM_CHECK_FAILED", str(exc), None, "neo4j:Contract")
+        return _reason(
+            "CONTRACT_HEADROOM_CHECK_FAILED",
+            str(exc),
+            None,
+            "neo4j:Contract",
+        )
 
     max_volume = float(headroom.get("max_volume_mbd", 0.0) or 0.0)
     take_or_pay_floor = float(headroom.get("take_or_pay_floor", 0.0) or 0.0)
@@ -276,27 +316,78 @@ def validator(
         )
 
     proposed_volume = float(candidate.get("proposed_volume_mbd", 0.0))
-    delta_share = proposed_volume / INDIA_DAILY_CONSUMPTION_MBD if INDIA_DAILY_CONSUMPTION_MBD > 0 else 0.0
-    reason, allowed_share = tracker.check_and_apply(candidate["supplier"], delta_share)
-    if reason:
+    delta_share = (
+        proposed_volume / INDIA_DAILY_CONSUMPTION_MBD
+        if INDIA_DAILY_CONSUMPTION_MBD > 0
+        else 0.0
+    )
+    diversification_reason, allowed_share = tracker.check_and_apply(
+        candidate["supplier"],
+        delta_share,
+    )
+
+    working_candidate = candidate
+    diversification_partial = False
+    adjusted_volume = proposed_volume
+
+    if diversification_reason:
         adjusted_volume = allowed_share * INDIA_DAILY_CONSUMPTION_MBD
-        status = "BLOCKED" if adjusted_volume <= 1e-9 else "PARTIAL"
+
+        if adjusted_volume <= 1e-9:
+            return _result(
+                status="BLOCKED",
+                candidate=candidate,
+                reason=diversification_reason,
+                playbook_id=playbook_id,
+                adjusted_volume_mbd=0.0,
+            )
+
+        diversification_partial = True
+        working_candidate = copy.deepcopy(candidate)
+        working_candidate["proposed_volume_mbd"] = adjusted_volume
+
+    operational_reason = _layer4_operational(working_candidate)
+    if operational_reason:
+        status = "PARTIAL" if operational_reason.get("partial") else "BLOCKED"
+
+        if diversification_partial:
+            if status == "PARTIAL":
+                final_adjusted_volume = adjusted_volume
+            else:
+                final_adjusted_volume = 0.0
+
+            combined_reason = {
+                "rule": "MULTI_LAYER_CONSTRAINT",
+                "value": {
+                    "diversification": diversification_reason,
+                    "operational": {
+                        k: v
+                        for k, v in operational_reason.items()
+                        if k != "partial"
+                    },
+                },
+                "threshold": None,
+                "source": "agent7",
+            }
+        else:
+            final_adjusted_volume = proposed_volume if status == "PARTIAL" else 0.0
+            combined_reason = {
+                k: v for k, v in operational_reason.items() if k != "partial"
+            }
+
         return _result(
             status=status,
             candidate=candidate,
-            reason=reason,
+            reason=combined_reason,
             playbook_id=playbook_id,
-            adjusted_volume_mbd=adjusted_volume,
+            adjusted_volume_mbd=final_adjusted_volume,
         )
 
-    reason = _layer4_operational(candidate)
-    if reason:
-        status = "PARTIAL" if reason.get("partial") else "BLOCKED"
-        adjusted_volume = proposed_volume if status == "PARTIAL" else 0.0
+    if diversification_partial:
         return _result(
-            status=status,
+            status="PARTIAL",
             candidate=candidate,
-            reason=reason,
+            reason=diversification_reason,
             playbook_id=playbook_id,
             adjusted_volume_mbd=adjusted_volume,
         )
@@ -323,5 +414,12 @@ def validate_batch(
     playbook_id: Optional[UUID] = None,
 ) -> List[Dict[str, Any]]:
     tracker = new_diversification_tracker()
-    sorted_candidates = sorted(candidates, key=lambda c: c.get("confidence", 0.0), reverse=True)
-    return [validator(candidate, playbook_id=playbook_id, tracker=tracker) for candidate in sorted_candidates]
+    sorted_candidates = sorted(
+        candidates,
+        key=lambda c: c.get("confidence", 0.0),
+        reverse=True,
+    )
+    return [
+        validator(candidate, playbook_id=playbook_id, tracker=tracker)
+        for candidate in sorted_candidates
+    ]

@@ -10,12 +10,34 @@ from neo4j import GraphDatabase
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-_NEO4J_URI = os.getenv("NEO4JURI", os.getenv("NEO4J_URI", "bolt://neo4j:7687"))
-_NEO4J_USER = os.getenv("NEO4JUSER", os.getenv("NEO4J_USER", "neo4j"))
-_NEO4J_PASSWORD = os.getenv("NEO4JPASSWORD", os.getenv("NEO4J_PASSWORD", "password"))
+_NEO4J_URI = os.getenv("NEO4J_URI", os.getenv("NEO4JURI", "bolt://neo4j:7687"))
+_NEO4J_USER = os.getenv("NEO4J_USER", os.getenv("NEO4JUSER", "neo4j"))
+_NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", os.getenv("NEO4JPASSWORD", "password"))
 _NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "neo4j")
 
 _driver = None
+
+_CHOKEPOINT_NAME_MAP = {
+    "hormuz": "Strait of Hormuz",
+    "strait of hormuz": "Strait of Hormuz",
+    "red_sea": "Bab-el-Mandeb",
+    "red sea": "Bab-el-Mandeb",
+    "bab-el-mandeb": "Bab-el-Mandeb",
+    "suez": "Suez Canal",
+    "suez canal": "Suez Canal",
+    "cape": "Cape of Good Hope",
+    "cape of good hope": "Cape of Good Hope",
+}
+
+
+def _normalize_chokepoint_name(name: str) -> str:
+    if not name:
+        return name
+    return _CHOKEPOINT_NAME_MAP.get(name.strip().lower(), name)
+
+
+def _normalize_chokepoint_names(names: List[str]) -> List[str]:
+    return [_normalize_chokepoint_name(name) for name in names]
 
 
 def _get_driver():
@@ -53,6 +75,7 @@ def _run_query(
 
 
 def get_surviving_routes(blocked_chokepoints: List[str]) -> List[Dict[str, Any]]:
+    normalized = _normalize_chokepoint_names(blocked_chokepoints or [])
     query = """
     MATCH (s:Supplier)-[:SHIPS_VIA]->(r:Route)-[:ARRIVES_AT]->(p:Port)
     WHERE NOT EXISTS {
@@ -67,7 +90,7 @@ def get_surviving_routes(blocked_chokepoints: List[str]) -> List[Dict[str, Any]]
       coalesce(r.distance_km, 0) AS distance_km
     ORDER BY s.name, r.name
     """
-    return _run_query(query, {"blocked_chokepoints": blocked_chokepoints or []})
+    return _run_query(query, {"blocked_chokepoints": normalized})
 
 
 def get_all_supplier_grades() -> List[Dict[str, Any]]:
@@ -79,7 +102,7 @@ def get_all_supplier_grades() -> List[Dict[str, Any]]:
       coalesce(g.api_gravity, 0.0) AS api_gravity,
       coalesce(g.sulfur_pct, 0.0) AS sulfur_pct,
       coalesce(g.viscosity, '') AS viscosity
-    ORDER BY s.name
+    ORDER BY s.name, g.name
     """
     return _run_query(query)
 
@@ -212,39 +235,3 @@ def get_graph_for_visualization() -> Dict[str, Any]:
         "nodes": _run_query(nodes_query),
         "edges": _run_query(rels_query),
     }
-
-
-def getsurvivingroutes(blockedchokepoints: List[str]) -> List[Dict[str, Any]]:
-    return get_surviving_routes(blockedchokepoints)
-
-
-def checkgradecompatibility(gradename: str, refineryname: str) -> bool:
-    return check_grade_compatibility(gradename, refineryname)
-
-
-def getsuppliercurrentshare(suppliername: str) -> float:
-    return get_supplier_current_share(suppliername)
-
-
-def getcontractheadroom(suppliername: str) -> Dict[str, Any]:
-    return get_contract_headroom(suppliername)
-
-
-def getallsuppliergrades() -> List[Dict[str, Any]]:
-    return get_all_supplier_grades()
-
-
-def getrefineryspecs(refineryname: str) -> Dict[str, Any]:
-    return get_refinery_specs(refineryname)
-
-
-def getgraphforvisualization() -> Dict[str, Any]:
-    return get_graph_for_visualization()
-
-
-def getsprtotalvolume() -> float:
-    return get_spr_total_volume()
-
-
-def getcompatibleshare(refineryname: str) -> float:
-    return get_compatible_share(refineryname)

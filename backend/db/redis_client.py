@@ -1,218 +1,295 @@
 # ============================================================
 # ResiChain — Redis Client
-# Two namespaces:
-#   events:raw  → Redis Stream (Fix 1 — persistent, not pub/sub)
-#   risk:state  → Regular key with TTL (live risk score cache)
+# Central Redis boundary for streams, keys, consumer groups, TTLs
 # ============================================================
 
-import redis.asyncio as aioredis
-import os
+from __future__ import annotations
+
 import json
 import logging
+import os
+from typing import Any, Dict, List, Optional, Tuple
+
+import redis.asyncio as aioredis
 
 logger = logging.getLogger(__name__)
 
-_redis_client = None  # Global Redis client
+# -------------------------------------------------------------------
+# Canonical Redis names
+# -------------------------------------------------------------------
 
-async def get_redis():
+RAW_EVENTS_STREAM = os.getenv("RAW_EVENTS_STREAM", "events:raw")
+VERIFIED_EVENTS_STREAM = os.getenv("VERIFIED_EVENTS_STREAM", "events:verified")
+
+RISK_STATE_KEY = os.getenv("RISK_STATE_KEY", "risk:state")
+VESSELS_LIVE_KEY = os.getenv("VESSELS_LIVE_KEY", "vessels:live")
+PRICES_LIVE_KEY = os.getenv("PRICES_LIVE_KEY", "prices:live")
+
+VERIFICATION_GROUP = os.getenv("VERIFICATION_GROUP", "verification_group")
+
+RISK_CACHE_TTL_SECONDS = int(os.getenv("RISK_CACHE_TTL_SECONDS", "300"))
+VESSELS_LIVE_TTL_SECONDS = int(os.getenv("VESSELS_LIVE_TTL_SECONDS", "360"))
+PRICES_LIVE_TTL_SECONDS = int(os.getenv("PRICES_LIVE_TTL_SECONDS", "360"))
+
+RAW_EVENTS_MAXLEN = int(os.getenv("RAW_EVENTS_MAXLEN", "1000"))
+VERIFIED_EVENTS_MAXLEN = int(os.getenv("VERIFIED_EVENTS_MAXLEN", "500"))
+
+DEFAULT_RISK_STATE: Dict[str, float] = {
+    "Hormuz": 0.34,
+    "Red_Sea": 0.41,
+    "Suez": 0.18,
+    "Cape": 0.05,
+}
+
+_redis_client: Optional[aioredis.Redis] = None
+
+
+async def get_redis() -> aioredis.Redis:
     """Returns the global Redis async client."""
     global _redis_client
     if _redis_client is None:
         _redis_client = aioredis.from_url(
             os.getenv("REDIS_URL", "redis://redis:6379"),
-            decode_responses=True
+            decode_responses=True,
         )
     return _redis_client
 
-async def init_redis_streams():
+
+async def init_redis_streams() -> None:
     """
     Called on FastAPI startup.
-    Creates the Redis Stream for events if it doesn't exist.
+    Verifies Redis connectivity, initializes default risk state,
+    and ensures the verification consumer group exists.
     """
     r = await get_redis()
-
-    # Create the events stream if it doesn't exist
-    # Redis Streams are auto-created on first xadd
-    # But we verify connection here
     await r.ping()
 
-    # Initialise risk state with default values
-    default_risk_state = {
-        "Hormuz": 0.34,
-        "Red_Sea": 0.41,
-        "Suez": 0.18,
-        "Cape": 0.05
-    }
-
-    ttl = int(os.getenv("RISK_CACHE_TTL_SECONDS", 300))
     await r.setex(
-        "risk:state",
-        ttl,
-        json.dumps(default_risk_state)
+        RISK_STATE_KEY,
+        RISK_CACHE_TTL_SECONDS,
+        json.dumps(DEFAULT_RISK_STATE),
     )
 
-    # Setup consumer group for verification layer
     await setup_consumer_group()
 
-    logger.info("Redis streams initialised (events:raw, risk:state, verification_group)")
+    logger.info(
+        "Redis initialised (raw_stream=%s, verified_stream=%s, risk_key=%s, group=%s)",
+        RAW_EVENTS_STREAM,
+        VERIFIED_EVENTS_STREAM,
+        RISK_STATE_KEY,
+        VERIFICATION_GROUP,
+    )
 
-# ---- Stream: Publish Event (Agent 1 uses this) --------------
+
+# -------------------------------------------------------------------
+# Streams
+# -------------------------------------------------------------------
+
 async def publish_event(event: dict) -> str:
     """
-    Publishes a verified event to the Redis Stream.
-    Returns the stream entry ID.
-    
-    Fix 1: Using xadd (Stream) instead of publish (pub/sub)
-    Events are persistent — agents won't miss them if busy.
+    Publishes an event to the raw events stream.
+    Fix 1: Uses Redis Streams (xadd), not pub/sub.
     """
     r = await get_redis()
     entry_id = await r.xadd(
-        "events:raw",
+        RAW_EVENTS_STREAM,
         {"data": json.dumps(event)},
-        maxlen=1000  # Keep last 1000 events max
+        maxlen=RAW_EVENTS_MAXLEN,
     )
-    logger.info(f"Event published to stream. ID: {entry_id}")
+    logger.info("Event published to %s. ID: %s", RAW_EVENTS_STREAM, entry_id)
     return entry_id
 
-# ---- Stream: Consume Events (Agents 2+3 use this) -----------
-async def consume_events(last_id: str = "0") -> list:
+
+async def publish_verified_event(event: dict) -> str:
     """
-    Reads new events from the stream since last_id.
-    Returns list of (id, event_dict) tuples.
-    
-    Agents call this with their last processed ID
-    so they never miss an event even if they were busy.
+    Publishes a WATCH or CONFIRMED event to the verified events stream.
+    """
+    r = await get_redis()
+    entry_id = await r.xadd(
+        VERIFIED_EVENTS_STREAM,
+        {"data": json.dumps(event)},
+        maxlen=VERIFIED_EVENTS_MAXLEN,
+    )
+    logger.info("Verified event published to %s. ID: %s", VERIFIED_EVENTS_STREAM, entry_id)
+    return entry_id
+
+
+async def consume_events(last_id: str = "0") -> List[Tuple[str, Dict[str, Any]]]:
+    """
+    Reads new events from the raw events stream since last_id.
+    Returns list of (message_id, event_dict) tuples.
     """
     r = await get_redis()
     results = await r.xread(
-        {"events:raw": last_id},
+        {RAW_EVENTS_STREAM: last_id},
         count=50,
-        block=1000  # Wait 1 second for new events
+        block=1000,
     )
 
-    events = []
+    events: List[Tuple[str, Dict[str, Any]]] = []
     if results:
-        for stream_name, messages in results:
+        for _stream_name, messages in results:
             for msg_id, msg_data in messages:
                 event = json.loads(msg_data["data"])
                 events.append((msg_id, event))
     return events
 
-# ---- Cache: Update Risk State (Agent 3 uses this) -----------
-async def update_risk_state(risk_vector: dict):
-    """
-    Saves the latest corridor risk scores to Redis cache.
-    Dashboard reads this for live risk display.
-    TTL = 5 minutes (refreshed every Agent 3 run)
-    
-    risk_vector example:
-    {"Hormuz": 0.82, "Red_Sea": 0.87, "Suez": 0.41, "Cape": 0.12}
-    """
-    r = await get_redis()
-    ttl = int(os.getenv("RISK_CACHE_TTL_SECONDS", 300))
-    await r.setex("risk:state", ttl, json.dumps(risk_vector))
-    logger.info(f"Risk state updated: {risk_vector}")
 
-# ---- Cache: Get Risk State (Dashboard + Agents use this) ----
-async def get_risk_state() -> dict:
+async def setup_consumer_group() -> None:
     """
-    Returns the current corridor risk scores from cache.
-    If cache is expired, returns safe default values.
-    """
-    r = await get_redis()
-    data = await r.get("risk:state")
-    if data:
-        return json.loads(data)
-    # Cache expired — return safe defaults
-    return {
-        "Hormuz": 0.0,
-        "Red_Sea": 0.0,
-        "Suez": 0.0,
-        "Cape": 0.0,
-        "cache_expired": True
-    }
-
-# ---- Token Blacklist (JWT logout fix) -----------------------
-async def blacklist_token(jti: str, expires_in_seconds: int):
-    """
-    Adds a JWT token ID to the blacklist on logout.
-    Fix for JWT not being invalidated on logout.
-    """
-    r = await get_redis()
-    await r.setex(f"blacklist:{jti}", expires_in_seconds, "revoked")
-
-async def is_token_blacklisted(jti: str) -> bool:
-    """Checks if a JWT token has been revoked."""
-    r = await get_redis()
-    return await r.exists(f"blacklist:{jti}") > 0 
-
-# ---- Consumer Group Setup (Fix 1 — xreadgroup) ----------
-async def setup_consumer_group():
-    """
-    Creates consumer group for events:raw stream.
-    Consumer groups ensure no message is ever lost even if
-    the consumer is busy when the message arrives.
-    Called once at startup.
+    Creates the verification consumer group for the raw events stream.
+    Consumer groups ensure messages are not lost if a consumer is busy.
     """
     r = await get_redis()
     try:
         await r.xgroup_create(
-            "events:raw",
-            "verification_group",
+            RAW_EVENTS_STREAM,
+            VERIFICATION_GROUP,
             id="0",
-            mkstream=True
+            mkstream=True,
         )
-        logger.info("Consumer group 'verification_group' created")
-    except Exception as e:
-        if "BUSYGROUP" in str(e):
-            logger.info("Consumer group already exists — skipping")
+        logger.info(
+            "Consumer group '%s' created on stream '%s'",
+            VERIFICATION_GROUP,
+            RAW_EVENTS_STREAM,
+        )
+    except Exception as exc:
+        if "BUSYGROUP" in str(exc):
+            logger.info(
+                "Consumer group '%s' already exists on '%s' — skipping",
+                VERIFICATION_GROUP,
+                RAW_EVENTS_STREAM,
+            )
         else:
-            logger.error(f"Consumer group error: {e}")
+            logger.error("Consumer group setup error: %s", exc)
 
-async def consume_from_group(consumer_name: str, count: int = 10) -> list:
+
+async def consume_from_group(
+    consumer_name: str,
+    count: int = 10,
+) -> List[Tuple[str, Dict[str, Any]]]:
     """
-    Reads messages from events:raw stream using consumer group.
-    Messages stay in stream until acknowledged — never lost.
-    
+    Reads messages from the raw events stream using the verification consumer group.
     Returns list of (message_id, event_dict) tuples.
     """
     r = await get_redis()
     try:
         results = await r.xreadgroup(
-            groupname="verification_group",
+            groupname=VERIFICATION_GROUP,
             consumername=consumer_name,
-            streams={"events:raw": ">"},
+            streams={RAW_EVENTS_STREAM: ">"},
             count=count,
-            block=1000
+            block=1000,
         )
-        messages = []
+
+        messages: List[Tuple[str, Dict[str, Any]]] = []
         if results:
-            for stream_name, msgs in results:
+            for _stream_name, msgs in results:
                 for msg_id, msg_data in msgs:
                     event = json.loads(msg_data["data"])
                     messages.append((msg_id, event))
         return messages
-    except Exception as e:
-        logger.error(f"Consumer group read error: {e}")
+    except Exception as exc:
+        logger.error("Consumer group read error: %s", exc)
         return []
 
-async def acknowledge_message(message_id: str):
-    """
-    Marks a message as processed in the consumer group.
-    Call this after successfully processing an event.
-    """
-    r = await get_redis()
-    await r.xack("events:raw", "verification_group", message_id)
 
-async def publish_verified_event(event: dict) -> str:
+async def acknowledge_message(message_id: str) -> None:
     """
-    Publishes a verified event to events:verified stream.
-    Only WATCH and CONFIRMED events go here.
+    Marks a message as processed in the verification consumer group.
     """
     r = await get_redis()
-    entry_id = await r.xadd(
-        "events:verified",
-        {"data": json.dumps(event)},
-        maxlen=500
+    await r.xack(RAW_EVENTS_STREAM, VERIFICATION_GROUP, message_id)
+
+
+# -------------------------------------------------------------------
+# Risk state cache
+# -------------------------------------------------------------------
+
+async def update_risk_state(risk_vector: dict) -> None:
+    """
+    Saves the latest corridor risk scores to Redis cache.
+    TTL is refreshed on every Agent 3 update.
+    """
+    r = await get_redis()
+    await r.setex(
+        RISK_STATE_KEY,
+        RISK_CACHE_TTL_SECONDS,
+        json.dumps(risk_vector),
     )
-    return entry_id 
+    logger.info("Risk state updated in %s: %s", RISK_STATE_KEY, risk_vector)
+
+
+async def get_risk_state() -> Dict[str, Any]:
+    """
+    Returns the current corridor risk scores from cache.
+    If cache is expired, returns safe default values.
+    """
+    r = await get_redis()
+    data = await r.get(RISK_STATE_KEY)
+    if data:
+        return json.loads(data)
+
+    return {
+        "Hormuz": 0.0,
+        "Red_Sea": 0.0,
+        "Suez": 0.0,
+        "Cape": 0.0,
+        "cache_expired": True,
+    }
+
+
+# -------------------------------------------------------------------
+# Live vessels / prices cache helpers
+# -------------------------------------------------------------------
+
+async def set_vessels_live(payload: dict) -> None:
+    r = await get_redis()
+    await r.setex(
+        VESSELS_LIVE_KEY,
+        VESSELS_LIVE_TTL_SECONDS,
+        json.dumps(payload),
+    )
+    logger.info("Updated %s", VESSELS_LIVE_KEY)
+
+
+async def get_vessels_live() -> Dict[str, Any]:
+    r = await get_redis()
+    data = await r.get(VESSELS_LIVE_KEY)
+    return json.loads(data) if data else {}
+
+
+async def set_prices_live(payload: dict) -> None:
+    r = await get_redis()
+    await r.setex(
+        PRICES_LIVE_KEY,
+        PRICES_LIVE_TTL_SECONDS,
+        json.dumps(payload),
+    )
+    logger.info("Updated %s", PRICES_LIVE_KEY)
+
+
+async def get_prices_live() -> Dict[str, Any]:
+    r = await get_redis()
+    data = await r.get(PRICES_LIVE_KEY)
+    return json.loads(data) if data else {}
+
+
+# -------------------------------------------------------------------
+# JWT blacklist
+# -------------------------------------------------------------------
+
+async def blacklist_token(jti: str, expires_in_seconds: int) -> None:
+    """
+    Adds a JWT token ID to the blacklist on logout.
+    """
+    r = await get_redis()
+    await r.setex(f"blacklist:{jti}", expires_in_seconds, "revoked")
+
+
+async def is_token_blacklisted(jti: str) -> bool:
+    """
+    Checks if a JWT token has been revoked.
+    """
+    r = await get_redis()
+    return (await r.exists(f"blacklist:{jti}")) > 0
