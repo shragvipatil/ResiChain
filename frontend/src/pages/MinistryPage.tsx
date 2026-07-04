@@ -8,7 +8,9 @@
  */
 
 import React, { useEffect, useState, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import { useAppContext } from "../context/AppContext";
+import { useAuth } from "../context/AuthContext";
 import { getRiskState, getVessels } from "../api/endpoints";
 import { Vessel } from "../types";
 import ShippingMap from "../components/ShippingMap";
@@ -26,6 +28,13 @@ const getRiskLabel = (risk: number) =>
 
 const MinistryPage: React.FC = () => {
   const { riskState, setRiskState, wsConnected, compoundDisruptionDetected } = useAppContext();
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+
+  const handleLogout = async () => {
+    await logout();
+    navigate("/login", { replace: true });
+  };
   const [vessels, setVessels] = useState<Vessel[]>([]);
   const pollRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -53,6 +62,13 @@ const MinistryPage: React.FC = () => {
           <p className="text-slate-400 text-sm mt-1">ResiChain AI v2.0 — Energy Supply Chain Resilience</p>
         </div>
         <div className="flex items-center gap-2 mt-1">
+          <button
+            onClick={() => navigate("/playbook")}
+            className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium
+              rounded-lg transition-colors flex items-center gap-1.5"
+          >
+            View Playbook →
+          </button>
           {compoundDisruptionDetected && (
             <span className="text-xs bg-red-900/60 text-red-400 border border-red-800 px-2.5 py-1 rounded-lg font-medium animate-pulse">
               ⚠ COMPOUND DISRUPTION
@@ -61,6 +77,15 @@ const MinistryPage: React.FC = () => {
           <div className="flex items-center gap-1.5">
             <div className={`w-1.5 h-1.5 rounded-full ${wsConnected ? "bg-green-400 animate-pulse" : "bg-slate-600"}`} />
             <span className="text-slate-500 text-xs">{wsConnected ? "Live" : "Mock data"}</span>
+          </div>
+          <div className="flex items-center gap-2 ml-2 pl-2 border-l border-slate-700">
+            <span className="text-slate-400 text-xs">{user?.name}</span>
+            <button
+              onClick={handleLogout}
+              className="text-slate-500 hover:text-red-400 text-xs transition-colors"
+            >
+              Logout
+            </button>
           </div>
         </div>
       </div>
