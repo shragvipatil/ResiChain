@@ -32,6 +32,7 @@ from db.neo4j_queries import (
     get_surviving_routes,
     get_all_supplier_grades,
     get_contract_headroom,
+    get_port_specs,
 )
 
 
@@ -64,14 +65,16 @@ DEPARTURE_PORT_BY_SUPPLIER = {
 }
 
 
-# Chokepoint -> typical tanker class for that corridor. Heuristic for
-# demo purposes (keys are SHORT chokepoint names, as extracted from
-# route names via " via ", not the full Neo4j Chokepoint.name values).
-VESSEL_CLASS_BY_CHOKEPOINT = {
-    "Hormuz":  "VLCC",
-    "Cape":    "VLCC",
-    "Suez":    "Suezmax",
-    "Red_Sea": "Suezmax",
+# Vessel class DWT thresholds — MUST match agents/agent7.py's
+# VESSEL_CLASS_MAX_DWT exactly, since Agent 6 picks a class here and
+# Agent 7 checks that same class's required DWT against the arrival
+# port's capacity downstream. If these ever drift apart, Agent 6 could
+# assign a class Agent 7 always rejects (or vice versa) — same failure
+# shape as the earlier chokepoint-naming bug, just one layer up.
+VESSEL_CLASS_MAX_DWT = {
+    "VLCC": 320_000,
+    "Suezmax": 160_000,
+    "Aframax": 120_000,
 }
 DEFAULT_VESSEL_CLASS = "Suezmax"
 
@@ -313,7 +316,7 @@ async def _build_candidates(surviving_routes: list, blocked_chokepoints_short: l
         route_name = route.get("route", "")
         primary_chokepoint = _extract_chokepoint_from_route_name(route_name)
         corridor_risk = risk_vector.get(primary_chokepoint, 0.3)
-        vessel_class = VESSEL_CLASS_BY_CHOKEPOINT.get(primary_chokepoint, DEFAULT_VESSEL_CLASS)
+        vessel_class = _pick_vessel_class_for_port(arrival_port)
 
         route_avail = max(0.0, 1.0 - corridor_risk)
 
@@ -379,6 +382,49 @@ def _extract_chokepoint_from_route_name(route_name: str) -> str:
     if " via " in route_name:
         return route_name.split(" via ")[-1].strip()
     return "Unknown"
+
+
+
+def _pick_vessel_class_for_port(arrival_port: str) -> str:
+    """
+    Picks the LARGEST vessel class the arrival port can actually
+    accommodate, using the port's real max_vessel_dwt from Neo4j.
+
+    FIX (this revision): previously assigned vessel class purely by
+    which chokepoint the route passed through (e.g. every Hormuz/Cape
+    route got VLCC), regardless of the destination port's real
+    capacity. That meant routes to smaller ports (Kochi 150k DWT,
+    Paradip 180k, Vizag 200k) were auto-blocked on PORT_CAPACITY every
+    time, even though a smaller, perfectly adequate vessel class could
+    have carried the same cargo. Real shipping picks a vessel size the
+    destination port can handle — this now does the same, and uses the
+    exact same DWT thresholds Agent 7 checks against downstream, so a
+    class picked here will always be one Agent 7 accepts on capacity
+    grounds (other checks — tankers available, contract limits — still
+    apply independently).
+    """
+    try:
+        port_specs = get_port_specs(arrival_port)
+        port_max_dwt = float(port_specs.get("max_vessel_dwt", 0.0) or 0.0)
+    except Exception as e:
+        logger.warning(f"Agent 6: get_port_specs failed for {arrival_port}: {e}")
+        port_max_dwt = 0.0
+
+    if port_max_dwt <= 0:
+        return DEFAULT_VESSEL_CLASS
+
+    # Pick the largest class that still fits within the port's capacity.
+    for vessel_class, required_dwt in sorted(
+        VESSEL_CLASS_MAX_DWT.items(), key=lambda kv: kv[1], reverse=True
+    ):
+        if port_max_dwt >= required_dwt:
+            return vessel_class
+
+    # Port is smaller than even the smallest known class — return the
+    # smallest class anyway; Agent 7 will correctly BLOCK it on
+    # PORT_CAPACITY, which is the accurate outcome for a genuinely
+    # undersized port rather than something to paper over here.
+    return min(VESSEL_CLASS_MAX_DWT, key=VESSEL_CLASS_MAX_DWT.get)
 
 
 
