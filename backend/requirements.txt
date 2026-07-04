@@ -3,6 +3,7 @@ fastapi
 uvicorn[standard]
 python-multipart
 pytest
+pytest-asyncio 
 # Database Connections
 asyncpg
 sqlalchemy
@@ -19,6 +20,7 @@ chromadb
 
 # LangGraph + LangChain
 langgraph
+langgraph-checkpoint-postgres 
 langchain
 langchain-google-genai
 langchain-community
