@@ -1,31 +1,29 @@
 # ============================================================
 # ResiChain — Agent 6: Procurement Orchestrator
 # Finds surviving supply routes, builds procurement candidates,
-# scores them, and runs each through Agent 7's constraint checks
-# (rejection-retry loop). Produces a ranked list + full audit trail.
+# scores them, and runs the full batch through Agent 7's constraint
+# checks in one call. Produces a ranked list + full audit trail.
 #
-# UPDATED to match Person B's confirmed Agent 7 contract:
-#   validate_candidate(candidate: dict, playbook_id: str | None = None) -> dict
-#   - Agent 6 no longer builds or passes running_share.
-#     Agent 7 owns diversification state internally (Fix 10).
-#   - Candidate dict field names now match the shared schema exactly:
-#     option_id, supplier, grade, route, refinery, arrival_port,
-#     proposed_volume_mbd, confidence, contract_reference,
-#     vessel_class, departure_port
+# UPDATED to match Person B's confirmed Agent 7 batch contract:
+#   validate_batch(candidates: list, playbook_id) -> list of results
+#   - Agent 6 builds the FULL candidate list first, then calls
+#     validate_batch() ONCE — no more per-candidate loop calling the
+#     validator. Fix 10's sequential diversification tracking, batch
+#     confidence-sorting, and Postgres audit logging all live inside
+#     the validator now (real Agent 7, or the fallback wrapper below).
+#   - Agent 6 merges each validation result back onto its own candidate
+#     data (by option_id) to build the final output, since Agent 7's
+#     result doesn't carry Agent-6-only fields like route/arrival_port/
+#     avg_transit_days.
+#   - Agent 6 no longer calls insert_procurement_evaluation() itself —
+#     see _fallback_validate_batch() for why that's still safe even
+#     when Agent 7 isn't available.
 #
-# FIX (this revision):
-#   1. Blocked-chokepoint naming mismatch — Redis risk:state uses short
-#      names ("Hormuz", "Suez", "Cape") but Neo4j Chokepoint.name uses
-#      full names ("Strait of Hormuz", "Suez Canal", "Cape of Good Hope").
-#      Added CHOKEPOINT_SHORT_TO_FULL mapping applied before calling
-#      get_surviving_routes(), so the exact-match IN filter actually works.
-#   2. _extract_chokepoint_from_route_name assumed underscore-joined route
-#      names ("<supplier>_to_India_via_<chokepoint>") but real seeded route
-#      names use spaces ("Saudi to Jamnagar via Hormuz") — always returned
-#      "Unknown". Fixed to split on " via " instead of "_via_".
+# Chokepoint naming and route-name-parsing fixes (from earlier) unchanged.
 # ============================================================
 
 
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -35,7 +33,6 @@ from db.neo4j_queries import (
     get_all_supplier_grades,
     get_contract_headroom,
 )
-from db.postgres_queries import insert_procurement_evaluation
 
 
 logger = logging.getLogger(__name__)
@@ -45,7 +42,6 @@ RISK_SURVIVAL_THRESHOLD = 0.40  # corridors at/above this are considered "blocke
 
 
 # Port -> Refinery mapping (matches Day 1 Neo4j seed)
-# Used to pick a target refinery for grade compatibility checks.
 PORT_TO_REFINERY = {
     "Vadinar": "Jamnagar RIL",
     "Sikka":   "Jamnagar RIL",
@@ -55,8 +51,7 @@ PORT_TO_REFINERY = {
 
 
 # Supplier -> primary export/departure terminal.
-# Reference lookup (demo-scope, same style as PORT_TO_REFINERY above) —
-# not pulled from a live API since no data source currently tracks this.
+# Reference lookup (demo-scope) — not pulled from a live API.
 DEPARTURE_PORT_BY_SUPPLIER = {
     "Saudi Arabia": "Ras Tanura",
     "Iraq":         "Basra Oil Terminal",
@@ -69,12 +64,9 @@ DEPARTURE_PORT_BY_SUPPLIER = {
 }
 
 
-# Chokepoint -> typical tanker class for that corridor.
-# Heuristic for demo purposes: Suez/Red Sea routes are canal-constrained
-# (Suezmax is literally sized for the Suez Canal); Hormuz/Cape routes
-# commonly run VLCC given the longer haul economics.
-# NOTE: keys here are the SHORT chokepoint names (as extracted from route
-# names via " via "), not the full Neo4j Chokepoint.name values.
+# Chokepoint -> typical tanker class for that corridor. Heuristic for
+# demo purposes (keys are SHORT chokepoint names, as extracted from
+# route names via " via ", not the full Neo4j Chokepoint.name values).
 VESSEL_CLASS_BY_CHOKEPOINT = {
     "Hormuz":  "VLCC",
     "Cape":    "VLCC",
@@ -84,15 +76,15 @@ VESSEL_CLASS_BY_CHOKEPOINT = {
 DEFAULT_VESSEL_CLASS = "Suezmax"
 
 
-# Short chokepoint name (used in Redis risk:state and in route names,
-# e.g. "Saudi to Jamnagar via Hormuz") -> full Chokepoint.name as seeded
-# in Neo4j (e.g. "Strait of Hormuz"). Required because get_surviving_routes()
-# does an exact match: `c.name IN $blocked_chokepoints`.
+# Short chokepoint name (Redis risk:state / route names) -> full
+# Chokepoint.name as seeded in Neo4j. Confirmed against the actual live
+# graph (Person B, seed_knowledge_graph.py): "Strait of Hormuz",
+# "Suez Canal", "Cape of Good Hope", "Bab-el-Mandeb" for Red_Sea.
 CHOKEPOINT_SHORT_TO_FULL = {
     "Hormuz": "Strait of Hormuz",
     "Suez": "Suez Canal",
     "Cape": "Cape of Good Hope",
-    "Red_Sea": "Red Sea",
+    "Red_Sea": "Bab-el-Mandeb",
 }
 
 
@@ -104,28 +96,24 @@ async def run_agent6(playbook_id=None) -> dict:
     """
     Main Agent 6 entry point.
 
-
     Flow:
     1. Read current corridor risk from Redis, determine blocked chokepoints
-    2. Query Neo4j for surviving routes (suppliers whose routes avoid blocked chokepoints)
+    2. Query Neo4j for surviving routes
     3. Build a procurement candidate per surviving supplier
     4. Score each candidate (route availability, grade compat, price, contract headroom)
-    5. Run rejection-retry loop through Agent 7 (or fallback validator) —
-       Agent 7 owns diversification state (running_share) internally
-    6. Log every evaluation to PostgreSQL procurement_evaluations
-    7. Return ranked list of APPROVED / PARTIAL options + full rejection trace
+    5. Validate the FULL batch in one call through Agent 7 (or fallback),
+       then merge validation results back onto candidate data by option_id
+    6. Return ranked list of APPROVED / PARTIAL options + full rejection trace
 
-
-    NOTE: Route-node schema repair is no longer done here — Person B's
-    seed_knowledge_graph.py owns that as an idempotent seed step now.
+    NOTE: Route-node schema repair and per-candidate Postgres logging are
+    NOT done here — Person B's seed script owns the former, and the
+    validator (real or fallback) owns the latter.
     """
     logger.info("Agent 6: Starting procurement evaluation cycle...")
     start_time = datetime.utcnow()
 
-
-    # Step 1 — determine blocked chokepoints from live risk state (short names,
-    # e.g. "Hormuz"), then translate to the full Neo4j Chokepoint.name values
-    # (e.g. "Strait of Hormuz") before querying the graph.
+    # Step 1 — determine blocked chokepoints from live risk state (short
+    # names), then translate to full Neo4j Chokepoint.name values.
     blocked_chokepoints_short = await _get_blocked_chokepoints()
     blocked_chokepoints = [
         CHOKEPOINT_SHORT_TO_FULL.get(name, name) for name in blocked_chokepoints_short
@@ -135,7 +123,6 @@ async def run_agent6(playbook_id=None) -> dict:
         f"-> (full) = {blocked_chokepoints}"
     )
 
-
     # Step 2 — surviving routes from Neo4j
     try:
         surviving_routes = get_surviving_routes(blocked_chokepoints)
@@ -143,33 +130,50 @@ async def run_agent6(playbook_id=None) -> dict:
         logger.error(f"Agent 6: get_surviving_routes failed: {e}")
         surviving_routes = []
 
-
     if not surviving_routes:
         logger.warning(
             "Agent 6: No surviving routes returned. Either every corridor is "
             "blocked, or the Knowledge Graph has no Route data yet."
         )
 
-
     # Step 3 — build candidates (one per unique supplier)
     candidates = await _build_candidates(surviving_routes, blocked_chokepoints_short)
     logger.info(f"Agent 6: Built {len(candidates)} procurement candidates")
 
+    # Step 4 — validate the FULL batch in one call (Fix 10 sequential
+    # diversification lives entirely inside the validator now — Agent 6
+    # never loops calling it per-candidate).
+    batch_validator = await _get_batch_validator()
+    validation_results = await batch_validator(candidates, playbook_id) if candidates else []
 
-    # Step 4 — rejection-retry loop through Agent 7
-    # NOTE: no running_share is built or passed here anymore.
-    # Agent 7 initializes it from current supplier shares and updates it
-    # sequentially per candidate internally (Fix 10 lives entirely in Agent 7 now).
-    validator = await _get_validator()
+    # Step 5 — merge each validation result back onto its original
+    # candidate (indexed by option_id), since Agent 7's result doesn't
+    # carry Agent-6-only fields (route, arrival_port, avg_transit_days).
+    validation_by_option_id = {r["option_id"]: r for r in validation_results}
+
     results = []
-
-
     for candidate in candidates:
         option_id = candidate["option_id"]
+        validation = validation_by_option_id.get(option_id)
 
-
-        validation = await validator(candidate, playbook_id)
-
+        if validation is None:
+            # Should never happen if the validator returns exactly one
+            # result per input candidate — logged loudly since it means
+            # a candidate silently vanished inside the validator.
+            logger.error(
+                f"Agent 6: No validation result returned for {option_id} "
+                f"— treating as BLOCKED"
+            )
+            validation = {
+                "status": "BLOCKED",
+                "reason": {
+                    "rule": "VALIDATOR_RESULT_MISSING",
+                    "value": option_id,
+                    "threshold": None,
+                    "source": "agent6",
+                },
+                "adjusted_volume_mbd": 0.0,
+            }
 
         evaluation_record = {
             "option_id": option_id,
@@ -188,39 +192,25 @@ async def run_agent6(playbook_id=None) -> dict:
         }
         results.append(evaluation_record)
 
-
-        # Log to PostgreSQL (Person B's query layer)
-        try:
-            insert_procurement_evaluation(
-                playbook_id=playbook_id,
-                option_id=option_id,
-                supplier=candidate["supplier"],
-                grade=candidate.get("grade", ""),
-                status=validation["status"],
-                rule_triggered=(validation.get("reason") or {}).get("rule", ""),
-                reason=validation.get("reason") or {},
-                confidence=candidate.get("confidence", 0.0),
-            )
-        except Exception as e:
-            logger.error(f"Agent 6: Failed to log evaluation for {option_id}: {e}")
-
-
         logger.info(
             f"Agent 6: {option_id} ({candidate['supplier']}) -> "
             f"{validation['status']}"
             + (f" [{validation['reason']['rule']}]" if validation.get("reason") else "")
         )
 
+    # NOTE: no insert_procurement_evaluation() call here — logging now
+    # happens inside whichever validator ran (real Agent 7's _result(),
+    # or _fallback_validate_batch below). Agent 6 owns candidate
+    # generation + ranking; the validator owns validation state + audit
+    # persistence — per the agreed ownership boundary with Person B.
 
-    # Step 5 — rank approved/partial options by confidence
+    # Step 6 — rank approved/partial options by confidence
     approved_and_partial = [
         r for r in results if r["status"] in ("APPROVED", "PARTIAL")
     ]
     approved_and_partial.sort(key=lambda r: r["confidence"], reverse=True)
 
-
     duration_ms = int((datetime.utcnow() - start_time).total_seconds() * 1000)
-
 
     output = {
         "evaluated_count": len(results),
@@ -234,14 +224,11 @@ async def run_agent6(playbook_id=None) -> dict:
         "generated_at": datetime.utcnow().isoformat(),
     }
 
-
-    # Cache latest result in Redis for the dashboard / Agent 8
     try:
         r = await get_redis()
         await r.setex("agent6:last_run", 600, json.dumps(output, default=str))
     except Exception as e:
         logger.error(f"Agent 6: Redis cache write failed: {e}")
-
 
     logger.info(
         f"Agent 6: Done in {duration_ms}ms — "
@@ -254,8 +241,7 @@ async def run_agent6(playbook_id=None) -> dict:
 
 
 async def _get_blocked_chokepoints() -> list:
-    """Reads live risk:state from Redis, returns corridors (short names,
-    e.g. 'Hormuz') at/above the survival threshold."""
+    """Reads live risk:state from Redis, returns corridors (short names) at/above the survival threshold."""
     try:
         r = await get_redis()
         data = await r.get("risk:state")
@@ -275,20 +261,14 @@ async def _get_blocked_chokepoints() -> list:
 async def _build_candidates(surviving_routes: list, blocked_chokepoints_short: list) -> list:
     """
     Builds one procurement candidate per surviving supplier.
-    Attaches grade, price, confidence score.
-
-
     Emits the shared candidate schema agreed with Person B:
     option_id, supplier, grade, route, refinery, arrival_port,
     proposed_volume_mbd, confidence, contract_reference,
-    vessel_class, departure_port  (+ extra scoring/display fields)
+    vessel_class, departure_port (+ extra scoring/display fields).
     """
     if not surviving_routes:
         return []
 
-
-    # Pull current risk vector once (used for route_avail scoring).
-    # Keys here are SHORT chokepoint names, matching route-name extraction.
     risk_vector = {}
     try:
         r = await get_redis()
@@ -301,27 +281,19 @@ async def _build_candidates(surviving_routes: list, blocked_chokepoints_short: l
     except Exception:
         pass
 
-
-    # Pull live price once
     brent_price, price_source = await _get_live_brent_price()
 
-
-    # Pull supplier -> grade mapping
     try:
         supplier_grades = get_all_supplier_grades()
     except Exception as e:
         logger.error(f"Agent 6: get_all_supplier_grades failed: {e}")
         supplier_grades = []
 
-
     grade_by_supplier = {g["supplier"]: g for g in supplier_grades}
 
-
-    # Deduplicate by supplier — one candidate per supplier (best/first route)
     seen_suppliers = set()
     candidates = []
     idx = 0
-
 
     for route in surviving_routes:
         supplier = route.get("supplier")
@@ -329,41 +301,29 @@ async def _build_candidates(surviving_routes: list, blocked_chokepoints_short: l
             continue
         seen_suppliers.add(supplier)
 
-
         grade_info = grade_by_supplier.get(supplier, {})
         grade = grade_info.get("grade", "Unknown")
         api_gravity = grade_info.get("api_gravity") or 32.0
         sulfur_pct = grade_info.get("sulfur_pct") or 1.5
 
-
         arrival_port = route.get("arrival_port") or "Vadinar"
         refinery = PORT_TO_REFINERY.get(arrival_port, "Jamnagar RIL")
         departure_port = DEPARTURE_PORT_BY_SUPPLIER.get(supplier, "Unknown")
 
-
-        # Determine which chokepoint this route primarily uses, by checking
-        # the route name. Real seeded route names use spaces and the word
-        # "via", e.g. "Saudi to Jamnagar via Hormuz" — NOT the underscore
-        # format ("<supplier>_to_India_via_<chokepoint>") originally assumed.
         route_name = route.get("route", "")
         primary_chokepoint = _extract_chokepoint_from_route_name(route_name)
         corridor_risk = risk_vector.get(primary_chokepoint, 0.3)
         vessel_class = VESSEL_CLASS_BY_CHOKEPOINT.get(primary_chokepoint, DEFAULT_VESSEL_CLASS)
 
-
-        # ---- Scoring ----
         route_avail = max(0.0, 1.0 - corridor_risk)
-
 
         try:
             grade_compat = 1.0 if _quick_grade_check(grade, refinery) else 0.0
         except Exception:
-            grade_compat = 1.0  # fail-open
-
+            grade_compat = 1.0
 
         premium_pct = _estimate_price_premium(api_gravity, sulfur_pct)
         price_delta_score = 1.0 / (1.0 + premium_pct / 100.0)
-
 
         try:
             contract = get_contract_headroom(supplier)
@@ -378,18 +338,14 @@ async def _build_candidates(surviving_routes: list, blocked_chokepoints_short: l
             contract_reference = ""
             contract_headroom_score = 1.0
 
-
         confidence = (
             route_avail * grade_compat * price_delta_score * contract_headroom_score
         )
 
-
         requested_volume = min(0.20, headroom_mbd) if headroom_mbd > 0 else 0.15
-
 
         option_id = f"proc_{supplier.replace(' ', '_')}_{idx:03d}"
         idx += 1
-
 
         candidates.append({
             "option_id": option_id,
@@ -403,8 +359,6 @@ async def _build_candidates(surviving_routes: list, blocked_chokepoints_short: l
             "proposed_volume_mbd": round(requested_volume, 4),
             "confidence": round(confidence, 4),
             "contract_reference": contract_reference,
-            # Extra fields kept for scoring/dashboard/audit display —
-            # not part of Agent 7's contract but harmless to include.
             "primary_chokepoint": primary_chokepoint,
             "avg_transit_days": route.get("avg_transit_days", 0),
             "brent_baseline_usd": brent_price,
@@ -416,21 +370,12 @@ async def _build_candidates(surviving_routes: list, blocked_chokepoints_short: l
             "contract_headroom_score": round(contract_headroom_score, 4),
         })
 
-
     return candidates
 
 
 
 def _extract_chokepoint_from_route_name(route_name: str) -> str:
-    """
-    Route names are seeded as '<supplier> to <arrival_port> via <chokepoint>'
-    (space-separated, e.g. "Saudi to Jamnagar via Hormuz") — pull the
-    chokepoint back out.
-
-    FIX: previously split on the underscore-joined form "_via_", which never
-    matched the real space-separated seed format and always fell through to
-    "Unknown". Now splits on " via " instead.
-    """
+    """Route names are seeded as 'Supplier to Port via Chokepoint' (space-separated)."""
     if " via " in route_name:
         return route_name.split(" via ")[-1].strip()
     return "Unknown"
@@ -438,18 +383,12 @@ def _extract_chokepoint_from_route_name(route_name: str) -> str:
 
 
 def _quick_grade_check(grade: str, refinery: str) -> bool:
-    """Lightweight sync wrapper — real check happens again in Agent 7's Layer 2."""
     from db.neo4j_queries import check_grade_compatibility
     return check_grade_compatibility(grade, refinery)
 
 
 
 def _estimate_price_premium(api_gravity: float, sulfur_pct: float) -> float:
-    """
-    Simple grade-differential heuristic:
-    Heavier/more sour crude (lower API gravity, higher sulfur) costs less to buy
-    but more to refine — approximate net premium here for ranking purposes.
-    """
     sulfur_penalty = max(0.0, (sulfur_pct - 1.0) * 3.0)
     gravity_bonus = min(2.0, max(0.0, (api_gravity - 30.0) / 10.0))
     premium_pct = max(0.0, sulfur_penalty - gravity_bonus)
@@ -458,7 +397,6 @@ def _estimate_price_premium(api_gravity: float, sulfur_pct: float) -> float:
 
 
 async def _get_live_brent_price() -> tuple:
-    """Reads current Brent price from Redis prices:live cache."""
     try:
         r = await get_redis()
         data = await r.get("prices:live")
@@ -472,25 +410,96 @@ async def _get_live_brent_price() -> tuple:
 
 
 
-async def _get_validator():
+async def _get_batch_validator():
     """
-    Prefers Person B's real agents.agent7.validate_candidate() if it exists.
-    Falls back to the local 4-layer validator if Agent 7 isn't ready yet.
+    Prefers Person B's real agents.agent7.validate_batch() if it exists.
+    Falls back to _fallback_validate_batch() (below) if Agent 7 isn't
+    importable for any reason.
 
+    IMPORTANT: agents.agent7.validate_batch is a SYNC function (plain
+    `def`, not `async def` — confirmed directly from the file, and from
+    a real production TypeError: "object list can't be used in 'await'
+    expression" when it was called with a bare `await`). It's wrapped in
+    asyncio.to_thread here so the caller in run_agent6() can always
+    `await` whatever this function returns, regardless of whether the
+    real validator or the (async) fallback is running underneath.
 
-    Confirmed contract (both real and fallback must match):
-        validate_candidate(candidate: dict, playbook_id: str | None = None) -> dict
-    Agent 7 owns running_share / diversification state internally — Agent 6
-    does not build or pass it.
+    Both paths return the SAME shape: a list of dicts, one per input
+    candidate, each containing option_id/supplier/grade/status/reason/
+    confidence/adjusted_volume_mbd. Agent 6 merges these back onto its
+    own candidate data by option_id afterward (see run_agent6).
+
+    Postgres audit logging happens INSIDE whichever validator runs
+    (real Agent 7's internal _result(), or _fallback_validate_batch
+    below) — never inside Agent 6 itself. This preserves the agreed
+    ownership boundary (Agent 6: candidate generation + ranking;
+    validator: validation state + audit persistence) regardless of
+    which validator actually executes.
     """
     try:
-        from agents.agent7 import validate_candidate
-        logger.info("Agent 6: Using Person B's agents.agent7.validate_candidate")
-        return validate_candidate
+        from agents.agent7 import validate_batch as sync_validate_batch
+        logger.info("Agent 6: Using Person B's agents.agent7.validate_batch")
+
+        async def _real_validate_batch(candidates, playbook_id):
+            return await asyncio.to_thread(sync_validate_batch, candidates, playbook_id)
+
+        return _real_validate_batch
     except (ImportError, AttributeError):
         logger.warning(
-            "Agent 6: agents.agent7.validate_candidate not found — "
-            "using fallback validator. Agent 7 is not blocking Agent 6."
+            "Agent 6: agents.agent7.validate_batch not found — "
+            "using fallback batch validator. Agent 7 is not blocking Agent 6."
         )
-        from agents.agent6_fallback_validator import validate_candidate as fallback
-        return fallback
+        return _fallback_validate_batch
+
+
+async def _fallback_validate_batch(candidates: list, playbook_id=None) -> list:
+    """
+    Batch-shaped wrapper around agent6_fallback_validator's per-candidate
+    validate_candidate(). Used only if agents.agent7 isn't importable.
+
+    Sorts by confidence descending first, matching Agent 7's real
+    validate_batch sorting order, so Fix 10's sequential diversification
+    behaves consistently regardless of which validator is running.
+
+    Also performs the Postgres audit insert itself (mirroring what real
+    Agent 7's _result() does internally) — since Agent 6 no longer logs,
+    something has to, or fallback-mode runs would leave no audit trail.
+    """
+    from agents.agent6_fallback_validator import validate_candidate as fallback_validate
+    from db.postgres_queries import insert_procurement_evaluation
+
+    sorted_candidates = sorted(candidates, key=lambda c: c.get("confidence", 0.0), reverse=True)
+    results = []
+
+    for candidate in sorted_candidates:
+        validation = await fallback_validate(candidate, playbook_id)
+
+        result = {
+            "option_id": candidate["option_id"],
+            "supplier": candidate["supplier"],
+            "grade": candidate.get("grade", ""),
+            "status": validation["status"],
+            "reason": validation.get("reason"),
+            "confidence": candidate.get("confidence", 0.0),
+            "adjusted_volume_mbd": validation.get("adjusted_volume_mbd", 0.0),
+        }
+        results.append(result)
+
+        try:
+            insert_procurement_evaluation(
+                playbook_id=playbook_id,
+                option_id=candidate["option_id"],
+                supplier=candidate["supplier"],
+                grade=candidate.get("grade", ""),
+                status=validation["status"],
+                rule_triggered=(validation.get("reason") or {}).get("rule", ""),
+                reason=validation.get("reason") or {},
+                confidence=candidate.get("confidence", 0.0),
+            )
+        except Exception as e:
+            logger.error(
+                f"Agent 6 fallback batch: Failed to log evaluation "
+                f"for {candidate['option_id']}: {e}"
+            )
+
+    return results 
