@@ -20,8 +20,12 @@ from db.postgres_queries import check_ofac_match, insert_procurement_evaluation
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-MAX_SUPPLIER_SHARE_PCT: float = float(os.getenv("MAXSUPPLIERSHAREPCT", os.getenv("MAX_SUPPLIER_SHARE_PCT", "0.40")))
-INDIA_DAILY_CONSUMPTION_MBD: float = float(os.getenv("INDIA_DAILY_CONSUMPTION_MBD", "5.1"))
+MAX_SUPPLIER_SHARE_PCT: float = float(
+    os.getenv("MAXSUPPLIERSHAREPCT", os.getenv("MAX_SUPPLIER_SHARE_PCT", "0.40"))
+)
+INDIA_DAILY_CONSUMPTION_MBD: float = float(
+    os.getenv("INDIA_DAILY_CONSUMPTION_MBD", "5.1")
+)
 
 VESSEL_CLASS_MAX_DWT = {
     "VLCC": 320_000,
@@ -78,7 +82,9 @@ def _result(
         "status": status,
         "reason": reason,
         "confidence": candidate.get("confidence"),
-        "adjusted_volume_mbd": round(float(adjusted_volume_mbd), 4) if adjusted_volume_mbd is not None else round(float(candidate.get("proposed_volume_mbd", 0.0)), 4),
+        "adjusted_volume_mbd": round(float(adjusted_volume_mbd), 4)
+        if adjusted_volume_mbd is not None
+        else round(float(candidate.get("proposed_volume_mbd", 0.0)), 4),
     }
 
     try:
@@ -103,10 +109,10 @@ def _layer1_sanctions(candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     try:
         match = check_ofac_match(supplier)
     except Exception as exc:
-        return _reason("OFAC_SDN_CHECK_FAILED", str(exc), None, "ofac.treasury.gov/SDN.XML")
+        return _reason("OFAC_SDN_CHECK_FAILED", str(exc), None, "ofac_sdn")
 
     if match:
-        return _reason("OFAC_SDN", supplier, None, "ofac.treasury.gov/SDN.XML")
+        return _reason("OFAC_SDN", supplier, None, "ofac_sdn")
     return None
 
 
@@ -185,7 +191,12 @@ def _layer4_operational(candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     required_dwt = VESSEL_CLASS_MAX_DWT.get(vessel_class)
     if required_dwt is None:
-        return _reason("UNKNOWN_VESSEL_CLASS", vessel_class, list(VESSEL_CLASS_MAX_DWT.keys()), "agent7:VESSEL_CLASS_MAX_DWT")
+        return _reason(
+            "UNKNOWN_VESSEL_CLASS",
+            vessel_class,
+            list(VESSEL_CLASS_MAX_DWT.keys()),
+            "agent7:VESSEL_CLASS_MAX_DWT",
+        )
 
     if arrival_port:
         try:
@@ -211,7 +222,12 @@ def _layer4_operational(candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     current_volume = float(headroom.get("current_volume_mbd", 0.0) or 0.0)
 
     if max_volume > 0 and current_volume + proposed_volume > max_volume:
-        return _reason("CONTRACT_CEILING", round(current_volume + proposed_volume, 4), max_volume, "neo4j:Contract.max_volume_mbd")
+        return _reason(
+            "CONTRACT_CEILING",
+            round(current_volume + proposed_volume, 4),
+            max_volume,
+            "neo4j:Contract.max_volume_mbd",
+        )
 
     if take_or_pay_floor > 0 and proposed_volume < take_or_pay_floor:
         return {
@@ -241,11 +257,23 @@ def validator(
 
     reason = _layer1_sanctions(candidate)
     if reason:
-        return _result(status="BLOCKED", candidate=candidate, reason=reason, playbook_id=playbook_id, adjusted_volume_mbd=0.0)
+        return _result(
+            status="BLOCKED",
+            candidate=candidate,
+            reason=reason,
+            playbook_id=playbook_id,
+            adjusted_volume_mbd=0.0,
+        )
 
     reason = _layer2_grade_compatibility(candidate)
     if reason:
-        return _result(status="BLOCKED", candidate=candidate, reason=reason, playbook_id=playbook_id, adjusted_volume_mbd=0.0)
+        return _result(
+            status="BLOCKED",
+            candidate=candidate,
+            reason=reason,
+            playbook_id=playbook_id,
+            adjusted_volume_mbd=0.0,
+        )
 
     proposed_volume = float(candidate.get("proposed_volume_mbd", 0.0))
     delta_share = proposed_volume / INDIA_DAILY_CONSUMPTION_MBD if INDIA_DAILY_CONSUMPTION_MBD > 0 else 0.0
@@ -253,13 +281,25 @@ def validator(
     if reason:
         adjusted_volume = allowed_share * INDIA_DAILY_CONSUMPTION_MBD
         status = "BLOCKED" if adjusted_volume <= 1e-9 else "PARTIAL"
-        return _result(status=status, candidate=candidate, reason=reason, playbook_id=playbook_id, adjusted_volume_mbd=adjusted_volume)
+        return _result(
+            status=status,
+            candidate=candidate,
+            reason=reason,
+            playbook_id=playbook_id,
+            adjusted_volume_mbd=adjusted_volume,
+        )
 
     reason = _layer4_operational(candidate)
     if reason:
         status = "PARTIAL" if reason.get("partial") else "BLOCKED"
         adjusted_volume = proposed_volume if status == "PARTIAL" else 0.0
-        return _result(status=status, candidate=candidate, reason=reason, playbook_id=playbook_id, adjusted_volume_mbd=adjusted_volume)
+        return _result(
+            status=status,
+            candidate=candidate,
+            reason=reason,
+            playbook_id=playbook_id,
+            adjusted_volume_mbd=adjusted_volume,
+        )
 
     return _result(
         status="APPROVED",

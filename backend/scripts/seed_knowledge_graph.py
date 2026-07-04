@@ -1,268 +1,307 @@
-"""
-agents/agent7.py
-================
-ResiChain AI v2.0 — Agent 7: Constraint Governance Validator
-
-Purpose:
-    Deterministic rule engine. No LLM involved. Gates every procurement
-    recommendation produced by Agent 6 through four sequential layers.
-
-    Layer 1 — Sanctions check (OFAC SDN, PostgreSQL)
-    Layer 2 — Grade compatibility (Neo4j COMPATIBLE_WITH)
-    Layer 3 — Diversification cap (sequential running_share, Fix 10)
-    Layer 4 — Operational constraints (port capacity, tanker availability,
-               contract ceilings, take-or-pay floors).
-
-Contract:
-    validate_candidate(candidate: dict, playbook_id: str | None = None,
-                       tracker: "DiversificationTracker" | None = None) -> dict
-
-    Agent 6 calls validate_candidate(candidate, playbook_id)
-    without passing tracker; Agent 7 owns diversification state internally.
-
-Return payload shape (must be consistent for every path):
-    {
-        "status": "APPROVED" | "BLOCKED" | "PARTIAL",
-        "reason": Optional[dict],  # None for APPROVED, dict for BLOCKED/PARTIAL
-        "adjusted_volume_mbd": float,  # same as proposed for APPROVED/BLOCKED
-    }
-
-    reason dict always has at least:
-        {
-            "rule": str,          # e.g. "OFAC_SDN", "GRADE_INCOMPATIBLE",
-                                  #      "DIVERSIFICATION_CAP", "PORT_REF_CAPACITY"
-            "value": Any,         # offending value, e.g. supplier name
-            "threshold": Any,     # policy threshold if applicable
-            "source": str,        # e.g. "OFAC SDN", "Neo4j"
-            "details": dict       # extra context
-        }
-
-    This lets Agent 6 and the API always show a structured explanation
-    for any BLOCKED/PARTIAL outcome.
-"""
-
 from __future__ import annotations
 
-import logging
-from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+import os
+from dotenv import load_dotenv
+from neo4j import GraphDatabase
 
-from db.neo4j_queries import (
-    check_grade_compatibility,
-    get_supplier_current_share,
-    get_refinery_specs,
-)
-from db.postgres_queries import is_supplier_sanctioned
+load_dotenv()
 
-logger = logging.getLogger(__name__)
+uri = os.getenv("NEO4J_URI", os.getenv("NEO4JURI", "bolt://neo4j:7687"))
+user = os.getenv("NEO4J_USER", os.getenv("NEO4JUSER", "neo4j"))
+password = os.getenv("NEO4J_PASSWORD", os.getenv("NEO4JPASSWORD", ""))
+database = os.getenv("NEO4J_DATABASE", "neo4j")
 
-# Mirror MAX_SUPPLIER_SHARE_PCT used in the config (Fix 10)
-MAX_SUPPLIER_SHARE_PCT = 0.40
+if not uri or not user or not password:
+    raise ValueError("Missing Neo4j credentials in environment variables.")
 
-
-@dataclass
-class DiversificationTracker:
-    """
-    Tracks running supplier shares for Fix 10.
-
-    This object is owned by Agent 7 and passed between candidate validations
-    within a single crisis run so diversification caps are enforced
-    sequentially instead of in parallel.
-    """
-
-    running_share: Dict[str, float] = field(default_factory=dict)
-
-    def get_share(self, supplier: str) -> float:
-        return self.running_share.get(supplier, 0.0)
-
-    def add_volume(self, supplier: str, delta_share: float) -> None:
-        self.running_share[supplier] = self.get_share(supplier) + delta_share
+driver = GraphDatabase.driver(uri, auth=(user, password))
 
 
-async def validate_candidate(
-    candidate: Dict[str, Any],
-    playbook_id: Optional[str] = None,
-    tracker: Optional[DiversificationTracker] = None,
-) -> Dict[str, Any]:
-    """
-    Main entrypoint for Agent 7.
-
-    Enforces all four constraint layers and always returns a structured
-    reason dict for BLOCKED/PARTIAL outcomes.
-    """
-
-    supplier = candidate.get("supplier", "")
-    proposed_volume_mbd = float(candidate.get("proposed_volume_mbd", 0.0))
-    refinery = candidate.get("refinery")
-    grade = candidate.get("grade")
-
-    # Layer 1 — Sanctions check (OFAC SDN)
-    if _is_sanctioned(supplier):
-        reason = {
-            "rule": "OFAC_SDN",
-            "value": supplier,
-            "threshold": None,
-            "source": "OFAC SDN (ofac_sdn table)",
-            "details": {
-                "message": f"Supplier {supplier} appears in OFAC SDN list.",
-                "playbook_id": playbook_id,
-            },
-        }
-        return {
-            "status": "BLOCKED",
-            "reason": reason,
-            "adjusted_volume_mbd": 0.0,
-        }
-
-    # Layer 2 — Grade compatibility
-    try:
-        if refinery and grade and not check_grade_compatibility(grade, refinery):
-            reason = {
-                "rule": "GRADE_INCOMPATIBLE",
-                "value": grade,
-                "threshold": refinery,
-                "source": "Neo4j COMPATIBLE_WITH",
-                "details": {
-                    "message": f"Grade {grade} incompatible with {refinery}.",
-                    "supplier": supplier,
-                    "playbook_id": playbook_id,
-                },
-            }
-            return {
-                "status": "BLOCKED",
-                "reason": reason,
-                "adjusted_volume_mbd": 0.0,
-            }
-    except Exception as exc:
-        logger.error("Agent 7: Grade compatibility check failed: %s", exc)
-
-    # Layer 3 — Diversification cap (Fix 10)
-    if tracker is None:
-        tracker = DiversificationTracker()
-
-    try:
-        base_share = get_supplier_current_share(supplier)
-    except Exception as exc:
-        logger.error("Agent 7: get_supplier_current_share failed: %s", exc)
-        base_share = 0.0
-
-    current_running_share = tracker.get_share(supplier) or base_share
-
-    # Compute incremental share contribution of this candidate relative to
-    # DEFAULT_DAILY_CONSUMPTION_MBD (same constant Agent 6 uses).
-    from agents.agent6 import DEFAULT_DAILY_CONSUMPTION_MBD
-
-    if DEFAULT_DAILY_CONSUMPTION_MBD > 0:
-        delta_share = proposed_volume_mbd / DEFAULT_DAILY_CONSUMPTION_MBD
-    else:
-        delta_share = 0.0
-
-    projected_share = current_running_share + delta_share
-
-    if projected_share > MAX_SUPPLIER_SHARE_PCT:
-        reason = {
-            "rule": "DIVERSIFICATION_CAP",
-            "value": round(projected_share, 4),
-            "threshold": MAX_SUPPLIER_SHARE_PCT,
-            "source": "PostgreSQL + Agent 7 DiversificationTracker",
-            "details": {
-                "message": (
-                    f"Supplier {supplier} share would reach "
-                    f"{projected_share:.3f}, exceeding cap "
-                    f"{MAX_SUPPLIER_SHARE_PCT:.2f}."
-                ),
-                "base_share": base_share,
-                "delta_share": round(delta_share, 4),
-                "playbook_id": playbook_id,
-            },
-        }
-        return {
-            "status": "BLOCKED",
-            "reason": reason,
-            "adjusted_volume_mbd": 0.0,
-        }
-
-    # If we approve at this layer, update tracker state
-    tracker.add_volume(supplier, delta_share)
-
-    # Layer 4 — Operational constraints (port/refinery capacity etc.)
-    op_result = _check_operational_constraints(candidate)
-    if op_result is not None:
-        # op_result already contains status/reason/adjusted_volume_mbd
-        return op_result
-
-    # If all four layers pass, candidate is APPROVED.
-    return {
-        "status": "APPROVED",
-        "reason": None,
-        "adjusted_volume_mbd": proposed_volume_mbd,
-    }
+def create_constraints(tx):
+    queries = [
+        "CREATE CONSTRAINT supplier_name IF NOT EXISTS FOR (n:Supplier) REQUIRE n.name IS UNIQUE",
+        "CREATE CONSTRAINT crudegrade_name IF NOT EXISTS FOR (n:CrudeGrade) REQUIRE n.name IS UNIQUE",
+        "CREATE CONSTRAINT chokepoint_name IF NOT EXISTS FOR (n:Chokepoint) REQUIRE n.name IS UNIQUE",
+        "CREATE CONSTRAINT route_name IF NOT EXISTS FOR (n:Route) REQUIRE n.name IS UNIQUE",
+        "CREATE CONSTRAINT port_name IF NOT EXISTS FOR (n:Port) REQUIRE n.name IS UNIQUE",
+        "CREATE CONSTRAINT refinery_name IF NOT EXISTS FOR (n:Refinery) REQUIRE n.name IS UNIQUE",
+        "CREATE CONSTRAINT storage_name IF NOT EXISTS FOR (n:StorageFacility) REQUIRE n.name IS UNIQUE",
+        "CREATE CONSTRAINT contract_reference IF NOT EXISTS FOR (n:Contract) REQUIRE n.reference IS UNIQUE",
+        "CREATE CONSTRAINT sanction_entity IF NOT EXISTS FOR (n:Sanction) REQUIRE n.entity IS UNIQUE",
+    ]
+    for q in queries:
+        tx.run(q)
 
 
-def _is_sanctioned(supplier: str) -> bool:
-    """
-    Layer 1 helper — check OFAC SDN via PostgreSQL.
-    Returns True if supplier is present in ofac_sdn table.
-    """
-    try:
-        return is_supplier_sanctioned(supplier)
-    except Exception as exc:
-        logger.error("Agent 7: sanctions check failed for %s: %s", supplier, exc)
-        return False
+def seed_suppliers(tx):
+    suppliers = [
+        {"name": "Saudi Arabia", "country": "Saudi Arabia", "import_share_pct": 18.2},
+        {"name": "Iraq", "country": "Iraq", "import_share_pct": 22.1},
+        {"name": "UAE", "country": "UAE", "import_share_pct": 8.4},
+        {"name": "Russia", "country": "Russia", "import_share_pct": 21.3},
+        {"name": "USA", "country": "USA", "import_share_pct": 5.7},
+        {"name": "Kuwait", "country": "Kuwait", "import_share_pct": 6.8},
+        {"name": "Venezuela", "country": "Venezuela", "import_share_pct": 2.5},
+        {"name": "Iran", "country": "Iran", "import_share_pct": 1.0},
+    ]
+    for s in suppliers:
+        tx.run("""
+            MERGE (n:Supplier {name: $name})
+            SET n.country = $country,
+                n.import_share_pct = $import_share_pct
+        """, s)
 
 
-def _check_operational_constraints(candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """
-    Layer 4 — operational constraints.
+def seed_crude_grades(tx):
+    grades = [
+        {"name": "Arab Light", "api_gravity": 32.8, "sulfur_pct": 1.8, "viscosity": "medium"},
+        {"name": "Basra Light", "api_gravity": 29.7, "sulfur_pct": 2.9, "viscosity": "medium"},
+        {"name": "Basra Medium", "api_gravity": 29.0, "sulfur_pct": 3.4, "viscosity": "medium"},
+        {"name": "Murban", "api_gravity": 40.5, "sulfur_pct": 0.7, "viscosity": "light"},
+        {"name": "Urals", "api_gravity": 31.1, "sulfur_pct": 1.5, "viscosity": "medium"},
+        {"name": "WTI", "api_gravity": 39.6, "sulfur_pct": 0.24, "viscosity": "light"},
+        {"name": "Kuwait Export", "api_gravity": 31.4, "sulfur_pct": 2.5, "viscosity": "medium"},
+        {"name": "Venezuelan Merey", "api_gravity": 16.0, "sulfur_pct": 2.5, "viscosity": "heavy"},
+    ]
+    for g in grades:
+        tx.run("""
+            MERGE (n:CrudeGrade {name: $name})
+            SET n.api_gravity = $api_gravity,
+                n.sulfur_pct = $sulfur_pct,
+                n.viscosity = $viscosity
+        """, g)
 
-    Currently implements a minimal refinery-capacity guard rail using
-    Neo4j refinery specs. This function MUST always return a structured
-    reason dict when it BLOCKS or PARTIALs a candidate.
-    """
 
-    supplier = candidate.get("supplier", "")
-    refinery = candidate.get("refinery")
-    proposed_volume_mbd = float(candidate.get("proposed_volume_mbd", 0.0))
+def seed_chokepoints(tx):
+    points = [
+        {"name": "Strait of Hormuz", "daily_capacity_mbd": 21.0},
+        {"name": "Bab-el-Mandeb", "daily_capacity_mbd": 8.8},
+        {"name": "Suez Canal", "daily_capacity_mbd": 5.5},
+        {"name": "Cape of Good Hope", "daily_capacity_mbd": 99.0},
+    ]
+    for c in points:
+        tx.run("""
+            MERGE (n:Chokepoint {name: $name})
+            SET n.daily_capacity_mbd = $daily_capacity_mbd,
+                n.current_risk = 0.0
+        """, c)
 
-    if not refinery:
-        return None
 
-    try:
-        specs = get_refinery_specs(refinery)
-    except Exception as exc:
-        logger.error("Agent 7: get_refinery_specs failed: %s", exc)
-        return None
+def seed_ports(tx):
+    ports = [
+        {"name": "Jamnagar Sikka", "country": "India", "max_vessel_dwt": 320000, "latitude": 22.4236, "longitude": 69.8222},
+        {"name": "Vadinar", "country": "India", "max_vessel_dwt": 320000, "latitude": 22.4670, "longitude": 69.8400},
+        {"name": "Kochi", "country": "India", "max_vessel_dwt": 150000, "latitude": 9.9667, "longitude": 76.2667},
+        {"name": "Paradip", "country": "India", "max_vessel_dwt": 180000, "latitude": 20.3167, "longitude": 86.6167},
+        {"name": "Vizag", "country": "India", "max_vessel_dwt": 200000, "latitude": 17.6868, "longitude": 83.2185},
+    ]
+    for p in ports:
+        tx.run("""
+            MERGE (n:Port {name: $name})
+            SET n.country = $country,
+                n.max_vessel_dwt = $max_vessel_dwt,
+                n.latitude = $latitude,
+                n.longitude = $longitude
+        """, p)
 
-    capacity_mbd = specs.get("capacity_mbd") or 0.0
-    if capacity_mbd <= 0.0:
-        return None
 
-    # Simple policy: if proposed volume > 30% of refinery capacity,
-    # PARTIAL the candidate and scale down to 30%.
-    cap_fraction = 0.30
-    max_allowed = cap_fraction * capacity_mbd
+def seed_refineries(tx):
+    refineries = [
+        {"name": "Jamnagar RIL", "owner": "Reliance", "capacity_mbd": 1.24, "location": "Jamnagar", "compatible_share": 0.90},
+        {"name": "Vadinar Nayara", "owner": "Nayara", "capacity_mbd": 0.405, "location": "Vadinar", "compatible_share": 0.85},
+        {"name": "Kochi BPCL", "owner": "BPCL", "capacity_mbd": 0.31, "location": "Kochi", "compatible_share": 0.65},
+        {"name": "Paradip IOCL", "owner": "IOCL", "capacity_mbd": 0.30, "location": "Paradip", "compatible_share": 0.80},
+    ]
+    for r in refineries:
+        tx.run("""
+            MERGE (n:Refinery {name: $name})
+            SET n.owner = $owner,
+                n.capacity_mbd = $capacity_mbd,
+                n.location = $location,
+                n.compatible_share = $compatible_share
+        """, r)
 
-    if proposed_volume_mbd <= max_allowed:
-        return None
 
-    adjusted = round(max_allowed, 4)
+def seed_storage(tx):
+    sites = [
+        {"name": "Visakhapatnam SPR", "type": "SPR", "capacity_mb": 9.0, "location": "Visakhapatnam"},
+        {"name": "Mangalore SPR", "type": "SPR", "capacity_mb": 12.0, "location": "Mangalore"},
+        {"name": "Padur SPR", "type": "SPR", "capacity_mb": 17.0, "location": "Padur"},
+    ]
+    for s in sites:
+        tx.run("""
+            MERGE (n:StorageFacility {name: $name})
+            SET n.type = $type,
+                n.capacity_mb = $capacity_mb,
+                n.location = $location
+        """, s)
 
-    reason = {
-        "rule": "PORT_REF_CAPACITY",
-        "value": proposed_volume_mbd,
-        "threshold": max_allowed,
-        "source": "Neo4j refinery_specs",
-        "details": {
-            "message": (
-                f"Candidate volume {proposed_volume_mbd:.3f} exceeds "
-                f"{cap_fraction:.0%} of {refinery} capacity ({max_allowed:.3f})."
-            ),
-            "supplier": supplier,
+
+def seed_routes(tx):
+    routes = [
+        {"name": "Saudi to Jamnagar via Hormuz", "avg_transit_days": 8, "distance_km": 6500},
+        {"name": "UAE to Kochi via Hormuz", "avg_transit_days": 7, "distance_km": 5800},
+        {"name": "Russia to Vadinar via Suez", "avg_transit_days": 18, "distance_km": 14000},
+        {"name": "Saudi to Kochi via Cape", "avg_transit_days": 12, "distance_km": 9800},
+        {"name": "UAE to Paradip via Cape", "avg_transit_days": 15, "distance_km": 12000},
+        {"name": "Iraq to Paradip via Hormuz", "avg_transit_days": 9, "distance_km": 7200},
+        {"name": "Iraq to Paradip via Cape", "avg_transit_days": 16, "distance_km": 12500},
+        {"name": "Kuwait to Vizag via Hormuz", "avg_transit_days": 9, "distance_km": 7100},
+    ]
+    for r in routes:
+        tx.run("""
+            MERGE (n:Route {name: $name})
+            SET n.avg_transit_days = $avg_transit_days,
+                n.distance_km = $distance_km
+        """, r)
+
+
+def seed_contracts(tx):
+    contracts = [
+        {
+            "reference": "CNTR-SAUDI-001",
+            "counterparty": "Saudi Arabia",
+            "max_volume_mbd": 0.60,
+            "current_volume_mbd": 0.32,
+            "take_or_pay_floor": 0.20,
+            "expiry": "2027-12-31",
         },
-    }
+        {
+            "reference": "CNTR-UAE-001",
+            "counterparty": "UAE",
+            "max_volume_mbd": 0.40,
+            "current_volume_mbd": 0.18,
+            "take_or_pay_floor": 0.10,
+            "expiry": "2027-12-31",
+        },
+        {
+            "reference": "CNTR-RUSSIA-001",
+            "counterparty": "Russia",
+            "max_volume_mbd": 0.40,
+            "current_volume_mbd": 0.38,
+            "take_or_pay_floor": 0.15,
+            "expiry": "2027-12-31",
+        },
+        {
+            "reference": "CNTR-IRAQ-001",
+            "counterparty": "Iraq",
+            "max_volume_mbd": 0.55,
+            "current_volume_mbd": 0.28,
+            "take_or_pay_floor": 0.18,
+            "expiry": "2027-12-31",
+        },
+    ]
+    for c in contracts:
+        tx.run("""
+            MERGE (n:Contract {reference: $reference})
+            SET n.counterparty = $counterparty,
+                n.max_volume_mbd = $max_volume_mbd,
+                n.current_volume_mbd = $current_volume_mbd,
+                n.take_or_pay_floor = $take_or_pay_floor,
+                n.expiry = $expiry
+        """, c)
 
-    return {
-        "status": "PARTIAL",
-        "reason": reason,
-        "adjusted_volume_mbd": adjusted,
-    }
+
+def seed_sanctions(tx):
+    sanctions = [
+        {"entity": "Iran", "issuer": "OFAC", "date_imposed": "2018-11-05", "scope": "Crude exports restrictions"},
+    ]
+    for s in sanctions:
+        tx.run("""
+            MERGE (n:Sanction {entity: $entity})
+            SET n.issuer = $issuer,
+                n.date_imposed = $date_imposed,
+                n.scope = $scope
+        """, s)
+
+
+def seed_relationships(tx):
+    queries = [
+        "MATCH (s:Supplier {name:'Saudi Arabia'}), (g:CrudeGrade {name:'Arab Light'}) MERGE (s)-[:PRODUCES]->(g)",
+        "MATCH (s:Supplier {name:'Iraq'}), (g:CrudeGrade {name:'Basra Light'}) MERGE (s)-[:PRODUCES]->(g)",
+        "MATCH (s:Supplier {name:'Iraq'}), (g:CrudeGrade {name:'Basra Medium'}) MERGE (s)-[:PRODUCES]->(g)",
+        "MATCH (s:Supplier {name:'UAE'}), (g:CrudeGrade {name:'Murban'}) MERGE (s)-[:PRODUCES]->(g)",
+        "MATCH (s:Supplier {name:'Russia'}), (g:CrudeGrade {name:'Urals'}) MERGE (s)-[:PRODUCES]->(g)",
+        "MATCH (s:Supplier {name:'USA'}), (g:CrudeGrade {name:'WTI'}) MERGE (s)-[:PRODUCES]->(g)",
+        "MATCH (s:Supplier {name:'Kuwait'}), (g:CrudeGrade {name:'Kuwait Export'}) MERGE (s)-[:PRODUCES]->(g)",
+        "MATCH (s:Supplier {name:'Venezuela'}), (g:CrudeGrade {name:'Venezuelan Merey'}) MERGE (s)-[:PRODUCES]->(g)",
+
+        "MATCH (g:CrudeGrade), (r:Refinery) WHERE NOT (g.name = 'Venezuelan Merey' AND r.name = 'Kochi BPCL') MERGE (g)-[:COMPATIBLE_WITH]->(r)",
+
+        "MATCH (s:Supplier {name:'Saudi Arabia'}), (r:Route {name:'Saudi to Jamnagar via Hormuz'}) MERGE (s)-[:SHIPS_VIA]->(r)",
+        "MATCH (s:Supplier {name:'Saudi Arabia'}), (r:Route {name:'Saudi to Kochi via Cape'}) MERGE (s)-[:SHIPS_VIA]->(r)",
+        "MATCH (s:Supplier {name:'UAE'}), (r:Route {name:'UAE to Kochi via Hormuz'}) MERGE (s)-[:SHIPS_VIA]->(r)",
+        "MATCH (s:Supplier {name:'UAE'}), (r:Route {name:'UAE to Paradip via Cape'}) MERGE (s)-[:SHIPS_VIA]->(r)",
+        "MATCH (s:Supplier {name:'Russia'}), (r:Route {name:'Russia to Vadinar via Suez'}) MERGE (s)-[:SHIPS_VIA]->(r)",
+        "MATCH (s:Supplier {name:'Iraq'}), (r:Route {name:'Iraq to Paradip via Hormuz'}) MERGE (s)-[:SHIPS_VIA]->(r)",
+        "MATCH (s:Supplier {name:'Iraq'}), (r:Route {name:'Iraq to Paradip via Cape'}) MERGE (s)-[:SHIPS_VIA]->(r)",
+        "MATCH (s:Supplier {name:'Kuwait'}), (r:Route {name:'Kuwait to Vizag via Hormuz'}) MERGE (s)-[:SHIPS_VIA]->(r)",
+
+        "MATCH (r:Route {name:'Saudi to Jamnagar via Hormuz'}), (c:Chokepoint {name:'Strait of Hormuz'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
+        "MATCH (r:Route {name:'UAE to Kochi via Hormuz'}), (c:Chokepoint {name:'Strait of Hormuz'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
+        "MATCH (r:Route {name:'Iraq to Paradip via Hormuz'}), (c:Chokepoint {name:'Strait of Hormuz'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
+        "MATCH (r:Route {name:'Kuwait to Vizag via Hormuz'}), (c:Chokepoint {name:'Strait of Hormuz'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
+        "MATCH (r:Route {name:'Russia to Vadinar via Suez'}), (c:Chokepoint {name:'Suez Canal'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
+        "MATCH (r:Route {name:'Saudi to Kochi via Cape'}), (c:Chokepoint {name:'Cape of Good Hope'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
+        "MATCH (r:Route {name:'UAE to Paradip via Cape'}), (c:Chokepoint {name:'Cape of Good Hope'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
+        "MATCH (r:Route {name:'Iraq to Paradip via Cape'}), (c:Chokepoint {name:'Cape of Good Hope'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
+
+        "MATCH (r:Route {name:'Saudi to Jamnagar via Hormuz'}), (p:Port {name:'Jamnagar Sikka'}) MERGE (r)-[:ARRIVES_AT]->(p)",
+        "MATCH (r:Route {name:'UAE to Kochi via Hormuz'}), (p:Port {name:'Kochi'}) MERGE (r)-[:ARRIVES_AT]->(p)",
+        "MATCH (r:Route {name:'Russia to Vadinar via Suez'}), (p:Port {name:'Vadinar'}) MERGE (r)-[:ARRIVES_AT]->(p)",
+        "MATCH (r:Route {name:'Saudi to Kochi via Cape'}), (p:Port {name:'Kochi'}) MERGE (r)-[:ARRIVES_AT]->(p)",
+        "MATCH (r:Route {name:'UAE to Paradip via Cape'}), (p:Port {name:'Paradip'}) MERGE (r)-[:ARRIVES_AT]->(p)",
+        "MATCH (r:Route {name:'Iraq to Paradip via Hormuz'}), (p:Port {name:'Paradip'}) MERGE (r)-[:ARRIVES_AT]->(p)",
+        "MATCH (r:Route {name:'Iraq to Paradip via Cape'}), (p:Port {name:'Paradip'}) MERGE (r)-[:ARRIVES_AT]->(p)",
+        "MATCH (r:Route {name:'Kuwait to Vizag via Hormuz'}), (p:Port {name:'Vizag'}) MERGE (r)-[:ARRIVES_AT]->(p)",
+
+        "MATCH (p:Port {name:'Jamnagar Sikka'}), (r:Refinery {name:'Jamnagar RIL'}) MERGE (p)-[:SUPPLIES]->(r)",
+        "MATCH (p:Port {name:'Vadinar'}), (r:Refinery {name:'Vadinar Nayara'}) MERGE (p)-[:SUPPLIES]->(r)",
+        "MATCH (p:Port {name:'Kochi'}), (r:Refinery {name:'Kochi BPCL'}) MERGE (p)-[:SUPPLIES]->(r)",
+        "MATCH (p:Port {name:'Paradip'}), (r:Refinery {name:'Paradip IOCL'}) MERGE (p)-[:SUPPLIES]->(r)",
+        "MATCH (p:Port {name:'Vizag'}), (r:Refinery {name:'Paradip IOCL'}) MERGE (p)-[:SUPPLIES]->(r)",
+
+        "MATCH (s:Supplier {name:'Iran'}), (n:Sanction {entity:'Iran'}) MERGE (s)-[:UNDER_SANCTION]->(n)",
+
+        "MATCH (s:Supplier {name:'Saudi Arabia'}), (c:Contract {reference:'CNTR-SAUDI-001'}) MERGE (s)-[:HAS_CONTRACT]->(c)",
+        "MATCH (s:Supplier {name:'UAE'}), (c:Contract {reference:'CNTR-UAE-001'}) MERGE (s)-[:HAS_CONTRACT]->(c)",
+        "MATCH (s:Supplier {name:'Russia'}), (c:Contract {reference:'CNTR-RUSSIA-001'}) MERGE (s)-[:HAS_CONTRACT]->(c)",
+        "MATCH (s:Supplier {name:'Iraq'}), (c:Contract {reference:'CNTR-IRAQ-001'}) MERGE (s)-[:HAS_CONTRACT]->(c)",
+
+        "MATCH (sf:StorageFacility {name:'Visakhapatnam SPR'}), (r:Refinery {name:'Paradip IOCL'}) MERGE (sf)-[:COVERS_REFINERY]->(r)",
+        "MATCH (sf:StorageFacility {name:'Mangalore SPR'}), (r:Refinery {name:'Kochi BPCL'}) MERGE (sf)-[:COVERS_REFINERY]->(r)",
+        "MATCH (sf:StorageFacility {name:'Padur SPR'}), (r:Refinery {name:'Jamnagar RIL'}) MERGE (sf)-[:COVERS_REFINERY]->(r)",
+    ]
+    for q in queries:
+        tx.run(q)
+
+
+def print_counts(session):
+    node_count = session.run("MATCH (n) RETURN count(n) AS c").single()["c"]
+    rel_count = session.run("MATCH ()-[r]->() RETURN count(r) AS c").single()["c"]
+    print(f"Knowledge Graph seeded successfully.", flush=True)
+    print(f"Neo4j database: {database}", flush=True)
+    print(f"Node count: {node_count}", flush=True)
+    print(f"Relationship count: {rel_count}", flush=True)
+
+
+def main():
+    driver.verify_connectivity()
+    with driver.session(database=database) as session:
+        session.execute_write(create_constraints)
+        session.execute_write(seed_suppliers)
+        session.execute_write(seed_crude_grades)
+        session.execute_write(seed_chokepoints)
+        session.execute_write(seed_ports)
+        session.execute_write(seed_refineries)
+        session.execute_write(seed_storage)
+        session.execute_write(seed_routes)
+        session.execute_write(seed_contracts)
+        session.execute_write(seed_sanctions)
+        session.execute_write(seed_relationships)
+        print_counts(session)
+    driver.close()
+
+
+if __name__ == "__main__":
+    main()

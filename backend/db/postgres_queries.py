@@ -8,7 +8,6 @@ from psycopg.rows import dict_row
 from dotenv import load_dotenv
 from psycopg.types.json import Jsonb
 
-# Load environment variables (works for both Docker and local runs)
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -17,25 +16,11 @@ if not DATABASE_URL:
 
 
 def _get_connection_kwargs() -> Dict[str, Any]:
-    """
-    Parse DATABASE_URL into kwargs for psycopg.connect.
-
-    psycopg3 accepts a DSN string directly, so this is mostly here as a single
-    place to tweak connection options if needed later.
-    """
     return {"conninfo": DATABASE_URL}
 
 
 @contextmanager
 def get_connection():
-    """
-    Context manager that yields a psycopg connection using dict_row.
-
-    Usage:
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(...)
-    """
     conn = psycopg.connect(**_get_connection_kwargs(), row_factory=dict_row)
     try:
         yield conn
@@ -46,12 +31,11 @@ def get_connection():
     finally:
         conn.close()
 
+
 def init_db():
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
-                CREATE EXTENSION IF NOT EXISTS "pgcrypto";
-            """)
+            cur.execute("""CREATE EXTENSION IF NOT EXISTS "pgcrypto";""")
 
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS audit_events (
@@ -106,7 +90,7 @@ def init_db():
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS procurement_evaluations (
                     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    playbook_id UUID NOT NULL REFERENCES playbooks(id) ON DELETE CASCADE,
+                    playbook_id UUID NULL REFERENCES playbooks(id) ON DELETE CASCADE,
                     option_id TEXT NOT NULL,
                     supplier TEXT NOT NULL,
                     grade TEXT,
@@ -121,12 +105,13 @@ def init_db():
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS spr_schedules (
                     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    playbook_id UUID NOT NULL REFERENCES playbooks(id) ON DELETE CASCADE,
+                    playbook_id UUID NULL REFERENCES playbooks(id) ON DELETE CASCADE,
                     feasible BOOLEAN NOT NULL,
                     daily_drawdown_schedule JSONB NOT NULL,
                     confidence DOUBLE PRECISION,
                     spr_remaining_mb DOUBLE PRECISION,
                     infeasibility_warning TEXT,
+                    inputs_used JSONB,
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 );
             """)
@@ -151,24 +136,13 @@ def init_db():
                 );
             """)
 
-        conn.commit()
-# ---------------------------------------------------------------------------
-# Event & Audit Queries
-# ---------------------------------------------------------------------------
+            cur.execute("""
+                ALTER TABLE spr_schedules
+                ADD COLUMN IF NOT EXISTS inputs_used JSONB;
+            """)
+
 
 def insert_audit_event(event: Dict[str, Any]) -> UUID:
-    """
-    Insert a row into audit_events.
-
-    Expected keys in `event` (matches spec):
-      - event_id (UUID or str)
-      - source (str)
-      - corridor (str)
-      - stage (str: 'WATCH' or 'CONFIRMED')
-      - confidence (float 0–1)
-      - verified_at (datetime)
-      - archived_at (datetime, optional)
-    """
     sql = """
         INSERT INTO audit_events (
             event_id, source, corridor, stage,
@@ -185,16 +159,15 @@ def insert_audit_event(event: Dict[str, Any]) -> UUID:
         with conn.cursor() as cur:
             cur.execute(sql, event)
             row = cur.fetchone()
-            return row["id"]  # type: ignore[return-value]
+            return row["id"]
 
 
-def insert_verified_event(event_json: Dict[str, Any],
-                          corridor: str,
-                          stage: str,
-                          confidence: float) -> UUID:
-    """
-    Insert into verified_events and return new id.
-    """
+def insert_verified_event(
+    event_json: Dict[str, Any],
+    corridor: str,
+    stage: str,
+    confidence: float,
+) -> UUID:
     sql = """
         INSERT INTO verified_events (
             event_json, corridor, stage, confidence
@@ -203,24 +176,19 @@ def insert_verified_event(event_json: Dict[str, Any],
         RETURNING id
     """
     params = {
-    "event_json": Jsonb(event_json),
-    "corridor": corridor,
-    "stage": stage,
-    "confidence": confidence,
+        "event_json": Jsonb(event_json),
+        "corridor": corridor,
+        "stage": stage,
+        "confidence": confidence,
     }
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(sql, params)
             row = cur.fetchone()
-            return row["id"]  # type: ignore[return-value]
+            return row["id"]
 
 
 def get_verified_events(limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
-    """
-    Fetch recent verified events for API pagination.
-
-    Ordered by created_at DESC, then id DESC.
-    """
     sql = """
         SELECT
             id,
@@ -239,19 +207,12 @@ def get_verified_events(limit: int = 50, offset: int = 0) -> List[Dict[str, Any]
             return cur.fetchall()
 
 
-# ---------------------------------------------------------------------------
-# OFAC Sanctions Queries (Agent 7 Layer 1)
-# ---------------------------------------------------------------------------
-
-def upsert_ofac_entry(entity_name: str,
-                      aliases: Optional[str],
-                      program: Optional[str],
-                      date_imposed: Optional[str]) -> None:
-    """
-    Upsert a single OFAC SDN entry into ofac_sdn.
-
-    Assumes entity_name is unique enough as a natural key for demo purposes.
-    """
+def upsert_ofac_entry(
+    entity_name: str,
+    aliases: Optional[str],
+    program: Optional[str],
+    date_imposed: Optional[str],
+) -> None:
     sql = """
         INSERT INTO ofac_sdn (
             entity_name, aliases, program, date_imposed
@@ -275,11 +236,6 @@ def upsert_ofac_entry(entity_name: str,
 
 
 def check_ofac_match(supplier_name: str) -> bool:
-    """
-    Return True if supplier_name appears in ofac_sdn entity_name or aliases.
-
-    Used by Agent 7 Layer 1 sanctions check.
-    """
     sql = """
         SELECT 1
         FROM ofac_sdn
@@ -294,24 +250,21 @@ def check_ofac_match(supplier_name: str) -> bool:
             return cur.fetchone() is not None
 
 
-# ---------------------------------------------------------------------------
-# Playbooks & Actions (Agent 8)
-# ---------------------------------------------------------------------------
+def is_supplier_sanctioned(supplier_name: str) -> bool:
+    return check_ofac_match(supplier_name)
 
-def insert_playbook(signal_detected_at,
-                    playbook_generated_at,
-                    signal_to_playbook_seconds: int,
-                    status: str,
-                    ministry_view: Dict[str, Any],
-                    procurement_view: Dict[str, Any],
-                    refinery_view: Dict[str, Any],
-                    confidence: float,
-                    inputs: Dict[str, Any]) -> UUID:
-    """
-    Insert a playbook and return its UUID.
 
-    All JSON views and inputs are stored as JSONB.
-    """
+def insert_playbook(
+    signal_detected_at,
+    playbook_generated_at,
+    signal_to_playbook_seconds: int,
+    status: str,
+    ministry_view: Dict[str, Any],
+    procurement_view: Dict[str, Any],
+    refinery_view: Dict[str, Any],
+    confidence: float,
+    inputs: Dict[str, Any],
+) -> UUID:
     sql = """
         INSERT INTO playbooks (
             signal_detected_at,
@@ -337,32 +290,30 @@ def insert_playbook(signal_detected_at,
         )
         RETURNING id
     """
-
     params = {
-    "signal_detected_at": signal_detected_at,
-    "playbook_generated_at": playbook_generated_at,
-    "signal_to_playbook_seconds": signal_to_playbook_seconds,
-    "status": status,
-    "ministry_view": Jsonb(ministry_view),
-    "procurement_view": Jsonb(procurement_view),
-    "refinery_view": Jsonb(refinery_view),
-    "confidence": confidence,
-    "inputs": Jsonb(inputs),
+        "signal_detected_at": signal_detected_at,
+        "playbook_generated_at": playbook_generated_at,
+        "signal_to_playbook_seconds": signal_to_playbook_seconds,
+        "status": status,
+        "ministry_view": Jsonb(ministry_view),
+        "procurement_view": Jsonb(procurement_view),
+        "refinery_view": Jsonb(refinery_view),
+        "confidence": confidence,
+        "inputs": Jsonb(inputs),
     }
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(sql, params)
             row = cur.fetchone()
-            return row["id"]  # type: ignore[return-value]
+            return row["id"]
 
 
-def insert_playbook_action(playbook_id: UUID,
-                           option_id: str,
-                           analyst_decision: str,
-                           analyst_note: Optional[str]) -> UUID:
-    """
-    Insert a single analyst decision into playbook_actions.
-    """
+def insert_playbook_action(
+    playbook_id: UUID,
+    option_id: str,
+    analyst_decision: str,
+    analyst_note: Optional[str],
+) -> UUID:
     sql = """
         INSERT INTO playbook_actions (
             playbook_id,
@@ -383,27 +334,19 @@ def insert_playbook_action(playbook_id: UUID,
         with conn.cursor() as cur:
             cur.execute(sql, params)
             row = cur.fetchone()
-            return row["id"]  # type: ignore[return-value]
+            return row["id"]
 
 
-# ---------------------------------------------------------------------------
-# Procurement Evaluations (Agent 6 & 7)
-# ---------------------------------------------------------------------------
-
-def insert_procurement_evaluation(playbook_id: Optional[UUID],
-                                  option_id: str,
-                                  supplier: str,
-                                  grade: str,
-                                  status: str,
-                                  rule_triggered: str,
-                                  reason: Dict[str, Any],
-                                  confidence: float) -> UUID:
-    """
-    Insert a row into procurement_evaluations.
-
-    `reason` is stored as JSONB and should include structured explanation
-    (rule, value, threshold, source, etc.) as per spec. [file:1]
-    """
+def insert_procurement_evaluation(
+    playbook_id: Optional[UUID],
+    option_id: str,
+    supplier: str,
+    grade: Optional[str],
+    status: str,
+    rule_triggered: Optional[str],
+    reason: Dict[str, Any],
+    confidence: Optional[float],
+) -> UUID:
     sql = """
         INSERT INTO procurement_evaluations (
             playbook_id,
@@ -441,24 +384,18 @@ def insert_procurement_evaluation(playbook_id: Optional[UUID],
         with conn.cursor() as cur:
             cur.execute(sql, params)
             row = cur.fetchone()
-            return row["id"]  # type: ignore[return-value]
+            return row["id"]
 
 
-# ---------------------------------------------------------------------------
-# SPR Schedules (Agent 5)
-# ---------------------------------------------------------------------------
-
-def insert_spr_schedule(playbook_id: Optional[UUID],
-                        feasible: bool,
-                        daily_drawdown_schedule: List[float],
-                        confidence: float,
-                        spr_remaining_mb: Optional[float],
-                        infeasibility_warning: Optional[str]) -> UUID:
-    """
-    Store Agent 5's SPR optimization output in spr_schedules.
-
-    daily_drawdown_schedule is stored as JSONB array of numbers.
-    """
+def insert_spr_schedule(
+    playbook_id: Optional[UUID],
+    feasible: bool,
+    daily_drawdown_schedule: List[float],
+    confidence: float,
+    spr_remaining_mb: Optional[float],
+    infeasibility_warning: Optional[str],
+    inputs_used: Optional[Dict[str, Any]] = None,
+) -> UUID:
     sql = """
         INSERT INTO spr_schedules (
             playbook_id,
@@ -466,7 +403,8 @@ def insert_spr_schedule(playbook_id: Optional[UUID],
             daily_drawdown_schedule,
             confidence,
             spr_remaining_mb,
-            infeasibility_warning
+            infeasibility_warning,
+            inputs_used
         )
         VALUES (
             %(playbook_id)s,
@@ -474,7 +412,8 @@ def insert_spr_schedule(playbook_id: Optional[UUID],
             %(daily_drawdown_schedule)s,
             %(confidence)s,
             %(spr_remaining_mb)s,
-            %(infeasibility_warning)s
+            %(infeasibility_warning)s,
+            %(inputs_used)s
         )
         RETURNING id
     """
@@ -485,27 +424,21 @@ def insert_spr_schedule(playbook_id: Optional[UUID],
         "confidence": confidence,
         "spr_remaining_mb": spr_remaining_mb,
         "infeasibility_warning": infeasibility_warning,
+        "inputs_used": Jsonb(inputs_used or {}),
     }
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(sql, params)
             row = cur.fetchone()
-            return row["id"]  # type: ignore[return-value]
+            return row["id"]
 
 
-# ---------------------------------------------------------------------------
-# Price History (Fallback chain for prices) [file:1]
-# ---------------------------------------------------------------------------
-
-def upsert_price_history(date,
-                         brent_usd: Optional[float],
-                         wti_usd: Optional[float],
-                         source: str) -> None:
-    """
-    Upsert a daily price row into price_history.
-
-    `date` should be a date object or ISO string parsable by PostgreSQL.
-    """
+def upsert_price_history(
+    date,
+    brent_usd: Optional[float],
+    wti_usd: Optional[float],
+    source: str,
+) -> None:
     sql = """
         INSERT INTO price_history (date, brent_usd, wti_usd, source)
         VALUES (%(date)s, %(brent_usd)s, %(wti_usd)s, %(source)s)
@@ -526,11 +459,6 @@ def upsert_price_history(date,
 
 
 def get_latest_price_history() -> Optional[Dict[str, Any]]:
-    """
-    Return the most recent price_history row, or None if table is empty.
-
-    Used as the last step in the price fallback chain. [file:1]
-    """
     sql = """
         SELECT date, brent_usd, wti_usd, source
         FROM price_history
