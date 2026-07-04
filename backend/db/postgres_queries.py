@@ -140,6 +140,11 @@ def init_db():
                 ALTER TABLE spr_schedules
                 ADD COLUMN IF NOT EXISTS inputs_used JSONB;
             """)
+            
+            cur.execute("""
+                ALTER TABLE procurement_evaluations
+                ALTER COLUMN playbook_id DROP NOT NULL;
+            """)
 
 
 def insert_audit_event(event: Dict[str, Any]) -> UUID:
