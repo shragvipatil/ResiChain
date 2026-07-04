@@ -63,22 +63,24 @@ services:
       - resichain_network
 
   chromadb:
-    image: chromadb/chroma:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.chromadb
     container_name: resichain_chromadb
     restart: unless-stopped
     ports:
       - "8001:8000"
     volumes:
-      - chromadb_data:/chroma/chroma
+      - chromadb_data:/data
     healthcheck:
-      # Shell-only TCP check — the chromadb/chroma image has neither curl
-      # nor python available, so an HTTP-based healthcheck fails with
-      # "executable file not found" regardless of whether Chroma itself
-      # is healthy. This just confirms port 8000 is accepting connections.
-      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8000 && exit 0 || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      # Per Chroma's official current docs (Cookbook): curl + /api/v2/
+      # heartbeat. Now works because Dockerfile.chromadb explicitly
+      # installs curl — the base image doesn't have it, nor python,
+      # python3, or bash's /dev/tcp (all confirmed absent by direct test).
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v2/heartbeat"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
       start_period: 20s
     networks:
       - resichain_network
@@ -97,7 +99,7 @@ services:
       - ./backend:/app
     depends_on:
       chromadb:
-        condition: service_started
+        condition: service_healthy
       postgres:
         condition: service_healthy
       redis:

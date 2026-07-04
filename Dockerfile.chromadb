@@ -1,0 +1,16 @@
+# Dockerfile.chromadb
+# ============================================================
+# Thin wrapper around the official chromadb/chroma image, adding curl
+# so a working HTTP healthcheck is actually possible.
+#
+# Context: the base image has none of python, python3, or bash's /dev/tcp
+# available on PATH (confirmed via direct in-container testing, not
+# assumed) — likely because current Chroma releases run on a Rust-based
+# binary rather than a Python runtime, making this a genuinely minimal
+# image. curl has to be installed explicitly rather than hoped for.
+# ============================================================
+FROM chromadb/chroma:latest
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/* 
