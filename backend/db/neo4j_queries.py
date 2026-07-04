@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 _NEO4J_URI = os.getenv("NEO4JURI", os.getenv("NEO4J_URI", "bolt://neo4j:7687"))
 _NEO4J_USER = os.getenv("NEO4JUSER", os.getenv("NEO4J_USER", "neo4j"))
 _NEO4J_PASSWORD = os.getenv("NEO4JPASSWORD", os.getenv("NEO4J_PASSWORD", "password"))
+_NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "neo4j")
 
 _driver = None
 
@@ -20,22 +21,42 @@ _driver = None
 def _get_driver():
     global _driver
     if _driver is None:
-        _driver = GraphDatabase.driver(_NEO4J_URI, auth=(_NEO4J_USER, _NEO4J_PASSWORD))
+        _driver = GraphDatabase.driver(
+            _NEO4J_URI,
+            auth=(_NEO4J_USER, _NEO4J_PASSWORD),
+        )
     return _driver
 
 
-def _run_query(query: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+async def init_neo4j() -> None:
     driver = _get_driver()
-    with driver.session() as session:
+    driver.verify_connectivity()
+    logger.info("Neo4j connectivity verified")
+
+
+def close_neo4j() -> None:
+    global _driver
+    if _driver is not None:
+        _driver.close()
+        _driver = None
+        logger.info("Neo4j driver closed")
+
+
+def _run_query(
+    query: str,
+    parameters: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    driver = _get_driver()
+    with driver.session(database=_NEO4J_DATABASE) as session:
         result = session.run(query, parameters or {})
         return [dict(record) for record in result]
 
 
 def get_surviving_routes(blocked_chokepoints: List[str]) -> List[Dict[str, Any]]:
     query = """
-    MATCH (s:Supplier)-[:SHIPSVIA]->(r:Route)-[:ARRIVESAT]->(p:Port)
+    MATCH (s:Supplier)-[:SHIPS_VIA]->(r:Route)-[:ARRIVES_AT]->(p:Port)
     WHERE NOT EXISTS {
-      MATCH (r)-[:PASSESTHROUGH]->(c:Chokepoint)
+      MATCH (r)-[:PASSES_THROUGH]->(c:Chokepoint)
       WHERE c.name IN $blocked_chokepoints
     }
     RETURN
@@ -55,9 +76,9 @@ def get_all_supplier_grades() -> List[Dict[str, Any]]:
     RETURN
       s.name AS supplier,
       g.name AS grade,
-      coalesce(g.api_gravity, g.apigravity, 0.0) AS api_gravity,
-      coalesce(g.sulfur_pct, g.sulfurpct, 0.0) AS sulfur_pct,
-      coalesce(g.viscosity, 0.0) AS viscosity
+      coalesce(g.api_gravity, 0.0) AS api_gravity,
+      coalesce(g.sulfur_pct, 0.0) AS sulfur_pct,
+      coalesce(g.viscosity, '') AS viscosity
     ORDER BY s.name
     """
     return _run_query(query)
@@ -67,16 +88,19 @@ def check_grade_compatibility(grade_name: str, refinery_name: str) -> bool:
     query = """
     MATCH (g:CrudeGrade {name: $grade_name})
     MATCH (r:Refinery {name: $refinery_name})
-    RETURN EXISTS((g)-[:COMPATIBLEWITH]->(r)) AS compatible
+    RETURN EXISTS((g)-[:COMPATIBLE_WITH]->(r)) AS compatible
     """
-    rows = _run_query(query, {"grade_name": grade_name, "refinery_name": refinery_name})
+    rows = _run_query(
+        query,
+        {"grade_name": grade_name, "refinery_name": refinery_name},
+    )
     return bool(rows[0]["compatible"]) if rows else False
 
 
 def get_supplier_current_share(supplier_name: str) -> float:
     query = """
     MATCH (s:Supplier {name: $supplier_name})
-    RETURN coalesce(s.import_share_pct, s.importsharepct, 0.0) AS share_pct
+    RETURN coalesce(s.import_share_pct, 0.0) AS share_pct
     """
     rows = _run_query(query, {"supplier_name": supplier_name})
     if not rows:
@@ -87,12 +111,12 @@ def get_supplier_current_share(supplier_name: str) -> float:
 
 def get_contract_headroom(supplier_name: str) -> Dict[str, Any]:
     query = """
-    MATCH (s:Supplier {name: $supplier_name})-[:HASCONTRACT]->(c:Contract)
+    MATCH (s:Supplier {name: $supplier_name})-[:HAS_CONTRACT]->(c:Contract)
     RETURN
-      coalesce(c.max_volume_mbd, c.maxvolumembd, 0.0) AS max_volume_mbd,
-      coalesce(c.take_or_pay_floor, c.takeorpayfloor, 0.0) AS take_or_pay_floor,
-      coalesce(c.current_volume_mbd, c.currentvolumembd, 0.0) AS current_volume_mbd,
-      coalesce(c.contract_reference, c.contractreference, c.counterparty, '') AS contract_reference
+      coalesce(c.max_volume_mbd, 0.0) AS max_volume_mbd,
+      coalesce(c.take_or_pay_floor, 0.0) AS take_or_pay_floor,
+      coalesce(c.current_volume_mbd, 0.0) AS current_volume_mbd,
+      coalesce(c.reference, c.counterparty, '') AS contract_reference
     ORDER BY coalesce(c.expiry, '') DESC
     LIMIT 1
     """
@@ -125,7 +149,7 @@ def get_port_specs(port_name: str) -> Dict[str, Any]:
     MATCH (p:Port {name: $port_name})
     RETURN
       p.name AS name,
-      coalesce(p.max_vessel_dwt, p.maxvesseldwt, 0.0) AS max_vessel_dwt,
+      coalesce(p.max_vessel_dwt, 0.0) AS max_vessel_dwt,
       coalesce(p.country, '') AS country,
       coalesce(p.latitude, 0.0) AS latitude,
       coalesce(p.longitude, 0.0) AS longitude
@@ -139,41 +163,37 @@ def get_refinery_specs(refinery_name: str) -> Dict[str, Any]:
     query = """
     MATCH (r:Refinery {name: $refinery_name})
     OPTIONAL MATCH (p:Port)-[:SUPPLIES]->(r)
-    OPTIONAL MATCH (sf:StorageFacility)-[:COVERSREFINERY]->(r)
-    OPTIONAL MATCH (g:CrudeGrade)-[:COMPATIBLEWITH]->(r)
+    OPTIONAL MATCH (sf:StorageFacility)-[:COVERS_REFINERY]->(r)
+    OPTIONAL MATCH (g:CrudeGrade)-[:COMPATIBLE_WITH]->(r)
     RETURN
       r.name AS name,
-      coalesce(r.capacity_mbd, r.capacitymbd, 0.0) AS capacity_mbd,
+      coalesce(r.capacity_mbd, 0.0) AS capacity_mbd,
+      coalesce(r.owner, '') AS owner,
+      coalesce(r.location, '') AS location,
+      coalesce(r.compatible_share, 0.0) AS compatible_share,
       coalesce(p.name, '') AS port,
       coalesce(sf.name, '') AS spr_site,
       collect(DISTINCT g.name) AS compatible_grades
     LIMIT 1
     """
     rows = _run_query(query, {"refinery_name": refinery_name})
-    if not rows:
-        return {}
-    row = rows[0]
-    row["compatibleshare"] = get_compatible_share(refinery_name)
-    return row
+    return rows[0] if rows else {}
 
 
 def get_compatible_share(refinery_name: str) -> float:
     query = """
     MATCH (r:Refinery {name: $refinery_name})
-    OPTIONAL MATCH (g:CrudeGrade)-[:COMPATIBLEWITH]->(r)
-    RETURN count(DISTINCT g) AS compatible_count
+    RETURN coalesce(r.compatible_share, 0.0) AS compatible_share
+    LIMIT 1
     """
     rows = _run_query(query, {"refinery_name": refinery_name})
-    compatible_count = int(rows[0]["compatible_count"]) if rows else 0
-    if compatible_count <= 0:
-        return 0.0
-    return 1.0
+    return float(rows[0]["compatible_share"] or 0.0) if rows else 0.0
 
 
 def get_spr_total_volume() -> float:
     query = """
     MATCH (s:StorageFacility)
-    RETURN sum(coalesce(s.capacity_mb, s.capacitymb, 0.0)) AS total_mb
+    RETURN sum(coalesce(s.capacity_mb, 0.0)) AS total_mb
     """
     rows = _run_query(query)
     return float(rows[0]["total_mb"] or 0.0) if rows else 0.0
@@ -194,7 +214,6 @@ def get_graph_for_visualization() -> Dict[str, Any]:
     }
 
 
-# Contract-compatible aliases
 def getsurvivingroutes(blockedchokepoints: List[str]) -> List[Dict[str, Any]]:
     return get_surviving_routes(blockedchokepoints)
 
