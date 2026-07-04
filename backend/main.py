@@ -249,7 +249,10 @@ app.add_middleware(
 
 # ---- Include Routers ----------------------------------------
 from routers.api import router as api_router
-app.include_router(api_router) 
+app.include_router(api_router)
+
+from routers.pdf_router import router as pdf_router
+app.include_router(pdf_router)
 
 # ---- Health Check -------------------------------------------
 @app.get("/health", tags=["System"])

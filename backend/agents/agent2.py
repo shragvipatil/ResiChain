@@ -3,10 +3,35 @@ backend/agents/agent2.py
 
 Agent 2 — Intelligence Extraction RAG-Enhanced
 
-Consumes verified events from Redis Stream `eventsverified`,
+Consumes verified events from Redis Stream `events:verified`,
 retrieves similar historical disruption summaries from ChromaDB,
 calls Gemini in structured output mode, and falls back to spaCy
 after exponential backoff failures.
+
+UPDATED (this revision):
+  1. Migrated google-generativeai (deprecated, no longer receiving
+     updates/fixes) to google-genai. Old SDK used a global genai.configure()
+     + stateful GenerativeModel object; new SDK uses a Client object with
+     no global config. See: https://ai.google.dev/gemini-api/docs/migrate
+  2. Gemini calls now use the new SDK's native async interface
+     (client.aio.models.generate_content) instead of calling a sync method
+     directly inside an async function — that was blocking the entire
+     FastAPI event loop for the duration of every Gemini network call.
+  3. Redis's xreadgroup/xack (also sync, also called unguarded inside the
+     async loop) now run via asyncio.to_thread — same fix, since the
+     `redis` package here is the sync client, not redis.asyncio.
+  4. Stream name corrected to "events:verified" (was "eventsverified") —
+     confirmed via agent3_risk_engine.py's own working code, which reads
+     from "events:verified" successfully. The old name meant this consumer
+     was listening on a stream nothing publishes to.
+  5. Consumer group name corrected to "agent2_consumers" (was
+     "agent2consumers") — matches the exact name specified in the Day 9
+     task spec.
+
+If any of these four corrections turn out to conflict with other changes
+in flight elsewhere, flag it — these were fixed based on direct evidence
+(the Day 9 spec text and agent3_risk_engine.py's working code), not a
+guess, but worth confirming nothing else now depends on the old names.
 """
 
 from __future__ import annotations
@@ -20,7 +45,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types as genai_types
 import redis
 import spacy
 
@@ -32,16 +58,21 @@ REDIS_URL = os.getenv("REDIS_URL", os.getenv("REDISURL", "redis://redis:6379/0")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", os.getenv("GEMINIAPIKEY"))
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", os.getenv("GEMINIMODEL", "gemini-2.5-flash"))
 
-STREAM_IN = "eventsverified"
-CONSUMER_GROUP = "agent2consumers"
+# Corrected per Day 9 spec and to match what Agent 1's verification layer
+# actually publishes to (confirmed working in agent3_risk_engine.py).
+STREAM_IN = "events:verified"
+CONSUMER_GROUP = "agent2_consumers"
 CONSUMER_NAME = os.getenv("AGENT2_CONSUMER_NAME", "agent2-worker")
-DLQ_STREAM = "eventsverified_dlq"
+DLQ_STREAM = "events:verified:dlq"
 
 MAX_RETRIES = 3
 POLL_BLOCK_MS = 5000
 REDIS_SOCKET_TIMEOUT_SECS = max(10, (POLL_BLOCK_MS // 1000) + 5)
 
-_gemini_model: Any = None
+# Renamed from _gemini_model (GenerativeModel instance, old SDK) to
+# _gemini_client (Client instance, new SDK) — the model name is now
+# passed per-call instead of being bound to a stateful object.
+_gemini_client: Any = None
 _nlp: Any = None
 
 _REQUIRED_FIELDS = {
@@ -59,17 +90,26 @@ def init_chromadb() -> None:
     logger.info("Agent 2 ChromaDB initialized")
 
 
-def startup() -> None:
-    global _gemini_model
-
-    init_chromadb()
-
-    if GEMINI_API_KEY:
-        genai.configure(api_key=GEMINI_API_KEY)
-        _gemini_model = genai.GenerativeModel(GEMINI_MODEL)
-        logger.info("Agent 2 Gemini initialized model=%s", GEMINI_MODEL)
-    else:
+def _init_gemini_client() -> None:
+    """
+    New SDK: no global genai.configure(). A Client is created once and
+    reused — it exposes both sync (client.models) and async
+    (client.aio.models) interfaces. We use the async interface throughout
+    since this whole agent runs inside FastAPI's event loop.
+    """
+    global _gemini_client
+    if _gemini_client is not None:
+        return
+    if not GEMINI_API_KEY:
         logger.warning("Gemini API key missing. Agent 2 will use fallback if needed.")
+        return
+    _gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+    logger.info("Agent 2 Gemini client initialized model=%s", GEMINI_MODEL)
+
+
+def startup() -> None:
+    init_chromadb()
+    _init_gemini_client()
 
 
 def _load_spacy():
@@ -144,14 +184,19 @@ Verified event text:
 
 
 async def _call_gemini(prompt: str) -> dict | None:
-    if _gemini_model is None:
+    if _gemini_client is None:
         return None
 
     for attempt in range(MAX_RETRIES):
         try:
-            response = _gemini_model.generate_content(
-                prompt,
-                generation_config=genai.GenerationConfig(
+            # New SDK's async interface (client.aio) — genuinely
+            # non-blocking, unlike the old SDK's generate_content()
+            # which was sync-only and had to be run directly (blocking
+            # the event loop) or wrapped in asyncio.to_thread.
+            response = await _gemini_client.aio.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(
                     response_mime_type="application/json",
                     temperature=0.0,
                 ),
@@ -276,14 +321,7 @@ def _send_to_dlq(r: redis.Redis, msg_id: str, fields: dict[str, Any], error: str
 
 
 async def run_agent2() -> None:
-    global _gemini_model
-
-    if GEMINI_API_KEY and _gemini_model is None:
-        genai.configure(api_key=GEMINI_API_KEY)
-        _gemini_model = genai.GenerativeModel(GEMINI_MODEL)
-        logger.info("Agent 2 Gemini initialized model=%s", GEMINI_MODEL)
-    elif not GEMINI_API_KEY:
-        logger.warning("Gemini API key missing. Agent 2 will use fallback if needed.")
+    _init_gemini_client()
 
     logger.info(
         "Agent 2 started stream=%s group=%s consumer=%s",
@@ -293,11 +331,21 @@ async def run_agent2() -> None:
     )
 
     r = _get_redis()
+    # One-time startup call — fine to leave sync, not part of the
+    # recurring hot loop that was freezing the event loop.
     _ensure_consumer_group(r)
 
     while True:
         try:
-            messages = r.xreadgroup(
+            # xreadgroup is a SYNC/blocking call (this is the `redis`
+            # package, not redis.asyncio). Calling it directly inside this
+            # async loop with no await/to_thread was freezing the entire
+            # FastAPI event loop for up to POLL_BLOCK_MS (5s) every single
+            # cycle — confirmed by steadily growing APScheduler delay
+            # warnings in production logs. asyncio.to_thread offloads it
+            # to a worker thread instead.
+            messages = await asyncio.to_thread(
+                r.xreadgroup,
                 groupname=CONSUMER_GROUP,
                 consumername=CONSUMER_NAME,
                 streams={STREAM_IN: ">"},
@@ -324,13 +372,13 @@ async def run_agent2() -> None:
                         # Optional downstream stream if Person A wires later:
                         # r.xadd("agent2outputs", {"data": json.dumps(result)})
 
-                        r.xack(STREAM_IN, CONSUMER_GROUP, msg_id)
+                        await asyncio.to_thread(r.xack, STREAM_IN, CONSUMER_GROUP, msg_id)
 
                     except Exception as exc:
                         logger.exception("Failed processing msg_id=%s error=%s", msg_id, exc)
                         try:
-                            _send_to_dlq(r, msg_id, fields, str(exc))
-                            r.xack(STREAM_IN, CONSUMER_GROUP, msg_id)
+                            await asyncio.to_thread(_send_to_dlq, r, msg_id, fields, str(exc))
+                            await asyncio.to_thread(r.xack, STREAM_IN, CONSUMER_GROUP, msg_id)
                             logger.warning(
                                 "Moved malformed/failed message to DLQ stream=%s msg_id=%s",
                                 DLQ_STREAM,

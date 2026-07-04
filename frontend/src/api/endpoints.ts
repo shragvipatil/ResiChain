@@ -7,7 +7,7 @@ import {
   CorridorRiskState, ProcurementResponse,
   PricesResponse, AgentsStatusResponse, VesselsResponse,
   Playbook, ApprovePlaybookRequest, ApprovePlaybookResponse,
-  KGraphData,
+  KGraphData, User, LoginRequest, LoginResponse,
 } from "../types";
 
 const delay = (ms: number) => new Promise((res) => setTimeout(res, ms));
@@ -149,4 +149,79 @@ export const getKGraph = async (): Promise<KGraphData> => {
   }
   const res = await apiClient.get("/kgraph");
   return res.data;
+};
+// ── Auth endpoints (Day 11) ────────────────────────────────────────────────────
+
+// Mock users — one per role, for demo login without a real backend yet
+const MOCK_USERS: Record<string, { user: User; password: string; requiresTotp: boolean }> = {
+  "ministry@resichain.gov.in": {
+    user: { user_id: "u1", name: "Anita Sharma", email: "ministry@resichain.gov.in", role: "MINISTRY_USER" },
+    password: "demo123",
+    requiresTotp: true,
+  },
+  "procurement@resichain.gov.in": {
+    user: { user_id: "u2", name: "Rahul Mehta", email: "procurement@resichain.gov.in", role: "PROCUREMENT_ANALYST" },
+    password: "demo123",
+    requiresTotp: false,
+  },
+  "refinery@resichain.gov.in": {
+    user: { user_id: "u3", name: "Priya Nair", email: "refinery@resichain.gov.in", role: "REFINERY_OPERATOR" },
+    password: "demo123",
+    requiresTotp: false,
+  },
+  "viewer@resichain.gov.in": {
+    user: { user_id: "u4", name: "Guest Viewer", email: "viewer@resichain.gov.in", role: "VIEWER" },
+    password: "demo123",
+    requiresTotp: false,
+  },
+  "admin@resichain.gov.in": {
+    user: { user_id: "u5", name: "System Admin", email: "admin@resichain.gov.in", role: "ADMIN" },
+    password: "demo123",
+    requiresTotp: true,
+  },
+};
+
+export const login = async (body: LoginRequest): Promise<LoginResponse> => {
+  if (USE_MOCK) {
+    await delay(500);
+    const record = MOCK_USERS[body.email];
+    if (!record || record.password !== body.password) {
+      throw new Error("Invalid email or password");
+    }
+    if (record.requiresTotp && !body.totp_code) {
+      return { user: record.user, requires_totp: true };
+    }
+    if (record.requiresTotp && body.totp_code !== "123456") {
+      throw new Error("Invalid authenticator code");
+    }
+    // In mock mode there's no real cookie — sessionStorage stands in for
+    // "logged in" state only inside the mock, purely for demo continuity.
+    sessionStorage.setItem("mock_user", JSON.stringify(record.user));
+    return { user: record.user };
+  }
+  const res = await apiClient.post("/auth/login", body);
+  return res.data;
+};
+
+export const logout = async (): Promise<void> => {
+  if (USE_MOCK) {
+    await delay(200);
+    sessionStorage.removeItem("mock_user");
+    return;
+  }
+  await apiClient.post("/auth/logout");
+};
+
+export const getCurrentUser = async (): Promise<User | null> => {
+  if (USE_MOCK) {
+    await delay(150);
+    const raw = sessionStorage.getItem("mock_user");
+    return raw ? JSON.parse(raw) : null;
+  }
+  try {
+    const res = await apiClient.get("/auth/me");
+    return res.data;
+  } catch {
+    return null;
+  }
 };
