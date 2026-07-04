@@ -1,20 +1,21 @@
 from __future__ import annotations
 
 import os
+
 from dotenv import load_dotenv
 from neo4j import GraphDatabase
 
 load_dotenv()
 
-uri = os.getenv("NEO4J_URI", os.getenv("NEO4JURI", "bolt://neo4j:7687"))
-user = os.getenv("NEO4J_USER", os.getenv("NEO4JUSER", "neo4j"))
-password = os.getenv("NEO4J_PASSWORD", os.getenv("NEO4JPASSWORD", ""))
-database = os.getenv("NEO4J_DATABASE", "neo4j")
+NEO4J_URI = os.getenv("NEO4J_URI", os.getenv("NEO4JURI", "bolt://neo4j:7687"))
+NEO4J_USER = os.getenv("NEO4J_USER", os.getenv("NEO4JUSER", "neo4j"))
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", os.getenv("NEO4JPASSWORD", ""))
+NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "neo4j")
 
-if not uri or not user or not password:
+if not NEO4J_URI or not NEO4J_USER or not NEO4J_PASSWORD:
     raise ValueError("Missing Neo4j credentials in environment variables.")
 
-driver = GraphDatabase.driver(uri, auth=(user, password))
+driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
 
 
 def create_constraints(tx):
@@ -279,15 +280,15 @@ def seed_relationships(tx):
 def print_counts(session):
     node_count = session.run("MATCH (n) RETURN count(n) AS c").single()["c"]
     rel_count = session.run("MATCH ()-[r]->() RETURN count(r) AS c").single()["c"]
-    print(f"Knowledge Graph seeded successfully.", flush=True)
-    print(f"Neo4j database: {database}", flush=True)
+    print("Knowledge Graph seeded successfully.", flush=True)
+    print(f"Neo4j database: {NEO4J_DATABASE}", flush=True)
     print(f"Node count: {node_count}", flush=True)
     print(f"Relationship count: {rel_count}", flush=True)
 
 
 def main():
     driver.verify_connectivity()
-    with driver.session(database=database) as session:
+    with driver.session(database=NEO4J_DATABASE) as session:
         session.execute_write(create_constraints)
         session.execute_write(seed_suppliers)
         session.execute_write(seed_crude_grades)

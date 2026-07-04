@@ -1,11 +1,13 @@
+from __future__ import annotations
+
 import os
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 import psycopg
-from psycopg.rows import dict_row
 from dotenv import load_dotenv
+from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 load_dotenv()
@@ -32,7 +34,7 @@ def get_connection():
         conn.close()
 
 
-def init_db():
+def init_db() -> None:
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("""CREATE EXTENSION IF NOT EXISTS "pgcrypto";""")
@@ -136,11 +138,6 @@ def init_db():
                 );
             """)
 
-            cur.execute("""
-                ALTER TABLE spr_schedules
-                ADD COLUMN IF NOT EXISTS inputs_used JSONB;
-            """)
-            
             cur.execute("""
                 ALTER TABLE procurement_evaluations
                 ALTER COLUMN playbook_id DROP NOT NULL;
@@ -255,10 +252,6 @@ def check_ofac_match(supplier_name: str) -> bool:
             return cur.fetchone() is not None
 
 
-def is_supplier_sanctioned(supplier_name: str) -> bool:
-    return check_ofac_match(supplier_name)
-
-
 def insert_playbook(
     signal_detected_at,
     playbook_generated_at,
@@ -349,7 +342,7 @@ def insert_procurement_evaluation(
     grade: Optional[str],
     status: str,
     rule_triggered: Optional[str],
-    reason: Dict[str, Any],
+    reason: Optional[Dict[str, Any]],
     confidence: Optional[float],
 ) -> UUID:
     sql = """
@@ -382,7 +375,7 @@ def insert_procurement_evaluation(
         "grade": grade,
         "status": status,
         "rule_triggered": rule_triggered,
-        "reason": Jsonb(reason),
+        "reason": Jsonb(reason or {}),
         "confidence": confidence,
     }
     with get_connection() as conn:
@@ -390,6 +383,45 @@ def insert_procurement_evaluation(
             cur.execute(sql, params)
             row = cur.fetchone()
             return row["id"]
+
+
+def get_procurement_evaluations(
+    playbook_id: Optional[UUID] = None,
+    limit: int = 100,
+) -> List[Dict[str, Any]]:
+    base_sql = """
+        SELECT
+            id,
+            playbook_id,
+            option_id,
+            supplier,
+            grade,
+            status,
+            rule_triggered,
+            reason,
+            confidence,
+            evaluated_at
+        FROM procurement_evaluations
+    """
+    params: Dict[str, Any] = {"limit": limit}
+
+    if playbook_id is not None:
+        sql = base_sql + """
+            WHERE playbook_id = %(playbook_id)s
+            ORDER BY evaluated_at DESC, id DESC
+            LIMIT %(limit)s
+        """
+        params["playbook_id"] = playbook_id
+    else:
+        sql = base_sql + """
+            ORDER BY evaluated_at DESC, id DESC
+            LIMIT %(limit)s
+        """
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            return cur.fetchall()
 
 
 def insert_spr_schedule(
