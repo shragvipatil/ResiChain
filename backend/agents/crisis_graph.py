@@ -34,7 +34,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import Any, Dict, List, Optional, TypedDict, Annotated
 from uuid import uuid4
 
 from langgraph.graph import StateGraph, END
@@ -43,32 +43,54 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Reducer for parallel-branch writes
+# ---------------------------------------------------------------------------
+
+def _take_latest(existing, incoming):
+    """
+    Reducer for state keys that parallel branches may both touch in the
+    same step. agent5_first and agent6 run concurrently and rejoin at
+    agent5_second — without a reducer, LangGraph raises InvalidUpdateError
+    ("can receive only one value per step") when both branches' writes
+    land together.
+
+    Each key here is in practice written by only ONE branch, so there's no
+    true conflict to resolve — this reducer just accepts whichever branch
+    actually produced a value (preferring a non-None incoming value, else
+    keeping what's there). This is deliberately simple rather than a deep
+    merge, because no two branches write the *same* key with *different*
+    meaningful values.
+    """
+    return incoming if incoming is not None else existing
+
+
+# ---------------------------------------------------------------------------
 # Shared graph state
 # ---------------------------------------------------------------------------
 
 class CrisisGraphState(TypedDict, total=False):
-    playbook_id: str
-    risk_vector: Dict[str, float]
+    playbook_id: Annotated[str, _take_latest]
+    risk_vector: Annotated[Dict[str, float], _take_latest]
 
     # Agent 4 output
-    compound_risk: Optional[float]
-    blocked_chokepoints: List[str]
-    is_compound_event: bool
-    surviving_routes: List[dict]
+    compound_risk: Annotated[Optional[float], _take_latest]
+    blocked_chokepoints: Annotated[List[str], _take_latest]
+    is_compound_event: Annotated[bool, _take_latest]
+    surviving_routes: Annotated[List[dict], _take_latest]
 
     # Agent 5 (first pass) — pre-Agent-6 rough estimate
-    surviving_routes_mbd: List[float]
-    spr_schedule_first_pass: dict
+    surviving_routes_mbd: Annotated[List[float], _take_latest]
+    spr_schedule_first_pass: Annotated[dict, _take_latest]
 
     # Agent 6 output (Agent 7 validation already embedded inside it)
-    procurement_result: dict
+    procurement_result: Annotated[dict, _take_latest]
 
     # Agent 5 (second pass, Fix 7) — re-run with Agent 6's approved volumes
-    approved_cargoes_mbd: List[float]
-    spr_schedule_final: dict
+    approved_cargoes_mbd: Annotated[List[float], _take_latest]
+    spr_schedule_final: Annotated[dict, _take_latest]
 
     # Agent 8 output
-    playbook: dict
+    playbook: Annotated[dict, _take_latest]
 
 
 # ---------------------------------------------------------------------------
@@ -102,8 +124,41 @@ async def _broadcast_node_complete(node_name: str, extra: Optional[dict] = None)
 # ---------------------------------------------------------------------------
 
 async def _run_agent5_async(state: dict) -> dict:
+    """
+    Adapter that works whether agents.agent5.run_agent5 is sync OR async.
+
+    History (why this exists): run_agent5 was originally a plain sync
+    `def` (confirmed by Person B at the time), so this wrapper used
+    asyncio.to_thread unconditionally. It has since been converted to
+    `async def` by a later edit, which made the to_thread call blow up
+    with "TypeError: object dict can't be used in 'await' expression".
+    Rather than hardcode the new assumption and break again the next
+    time the file changes hands, detect at runtime:
+      - async def  -> await it directly
+      - plain def  -> offload to a worker thread (so a blocking LP solve
+                      can't freeze the event loop)
+
+    ALSO DEFENSIVE: if run_agent5 returns None (its error paths can),
+    normalize to {} — a None here propagates through node returns and
+    can null the entire merged graph state downstream (observed in a
+    real run as agent8 receiving state=None).
+    """
+    import inspect
     from agents.agent5 import run_agent5
-    return await asyncio.to_thread(run_agent5, state)
+
+    if inspect.iscoroutinefunction(run_agent5):
+        result = await run_agent5(state)
+    else:
+        result = await asyncio.to_thread(run_agent5, state)
+
+    if result is None:
+        logger.error(
+            "Crisis graph: run_agent5 returned None (likely its internal "
+            "error path) — normalizing to empty dict so the graph state "
+            "doesn't get nulled downstream."
+        )
+        return {}
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +227,24 @@ async def node_agent4(state: CrisisGraphState) -> dict:
         "compound_risk": updated.get("compound_risk"),
         "is_compound_event": updated.get("is_compound_event"),
     })
+
+    # Day 9 spec: Person C's frontend listens for a WebSocket event of
+    # type "compound_disruption_detected" to trigger the Leaflet Cape
+    # route polyline animation. This exact event type was never being
+    # emitted anywhere — only the generic PIPELINE_NODE_COMPLETE — so
+    # the animation could never fire. Emitting it here, only when a
+    # genuine compound event is detected.
+    if updated.get("is_compound_event"):
+        try:
+            from main import broadcast_to_dashboard
+            await broadcast_to_dashboard("compound_disruption_detected", {
+                "compound_risk": updated.get("compound_risk"),
+                "blocked_chokepoints": updated.get("blocked_chokepoints", []),
+                "timestamp": datetime.utcnow().isoformat(),
+            })
+        except Exception as e:
+            logger.error(f"Crisis graph: compound_disruption_detected broadcast failed: {e}")
+
     return updated
 
 
@@ -182,13 +255,18 @@ async def node_agent5_first_pass(state: CrisisGraphState) -> dict:
     state_for_agent5 = {**state, "surviving_routes_mbd": surviving_routes_mbd}
     updated = await _run_agent5_async(state_for_agent5)
 
+    # Same present-but-None guard as agent5_second — see note there.
+    spr_schedule = updated.get("spr_schedule") or {}
     await _broadcast_node_complete("agent5_first_pass", {
-        "feasible": updated.get("spr_schedule", {}).get("feasible"),
+        "feasible": spr_schedule.get("feasible"),
     })
+    # Return ONLY the keys this branch produces — not a full {**state}
+    # spread. During the parallel step, spreading the whole state would
+    # re-emit agent6's keys too, compounding the InvalidUpdateError. The
+    # reducer merges these back with agent6's separate writes.
     return {
-        **updated,
         "surviving_routes_mbd": surviving_routes_mbd,
-        "spr_schedule_first_pass": updated.get("spr_schedule"),
+        "spr_schedule_first_pass": spr_schedule,
     }
 
 
@@ -201,7 +279,8 @@ async def node_agent6(state: CrisisGraphState) -> dict:
         "approved_count": result.get("approved_count"),
         "blocked_count": result.get("blocked_count"),
     })
-    return {**state, "procurement_result": result}
+    # Only this branch's own key — see node_agent5_first_pass note.
+    return {"procurement_result": result}
 
 
 async def node_agent5_second_pass(state: CrisisGraphState) -> dict:
@@ -220,13 +299,18 @@ async def node_agent5_second_pass(state: CrisisGraphState) -> dict:
     state_for_agent5 = {**state, "approved_cargoes_mbd": approved_cargoes_mbd}
     updated = await _run_agent5_async(state_for_agent5)
 
+    # (updated.get("spr_schedule") or {}) not updated.get("spr_schedule", {}):
+    # .get's default only applies when the key is ABSENT — if the key
+    # exists holding None (which happens when Agent 5's error path runs),
+    # .get returns None and .get("feasible") on it crashes. Observed in a
+    # real run.
+    spr_schedule = updated.get("spr_schedule") or {}
     await _broadcast_node_complete("agent5_second_pass", {
-        "feasible": updated.get("spr_schedule", {}).get("feasible"),
+        "feasible": spr_schedule.get("feasible"),
     })
     return {
-        **updated,
         "approved_cargoes_mbd": approved_cargoes_mbd,
-        "spr_schedule_final": updated.get("spr_schedule"),
+        "spr_schedule_final": spr_schedule,
     }
 
 
@@ -236,10 +320,22 @@ async def node_agent8_stub(state: CrisisGraphState) -> dict:
     Assembles a minimal, clearly-flagged playbook shape from whatever
     Agent 5 and Agent 6 produced, so the graph completes end-to-end today
     instead of erroring at the last node. Replace this entire function
-    with a real call the moment Agent 8 exists — check for its existence
-    the same defensive way agent6.py's _get_validator() checks for
-    agent7, rather than leaving this hardcoded forever.
+    with a real call the moment Agent 8 exists.
+
+    DEFENSIVE: state arrived as None in a real run (AttributeError:
+    'NoneType' object has no attribute 'get') — root cause under
+    investigation with the None-state log below. A None state here should
+    degrade to an explicitly-flagged empty playbook, not a 500 for the
+    whole pipeline.
     """
+    if state is None:
+        logger.error(
+            "Crisis graph: node_agent8_stub received state=None — upstream "
+            "node returned a value that merged to nothing. Emitting empty "
+            "flagged playbook instead of crashing."
+        )
+        state = {}
+
     playbook = {
         "playbook_id": state.get("playbook_id"),
         "status": "STUB — Agent 8 not yet built, this is NOT a real playbook",
@@ -251,7 +347,7 @@ async def node_agent8_stub(state: CrisisGraphState) -> dict:
         "generated_at": datetime.utcnow().isoformat(),
     }
     await _broadcast_node_complete("agent8_stub", {"status": playbook["status"]})
-    return {**state, "playbook": playbook}
+    return {"playbook": playbook}
 
 
 # ---------------------------------------------------------------------------
