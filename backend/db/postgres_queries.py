@@ -143,6 +143,11 @@ def init_db() -> None:
                 ALTER COLUMN playbook_id DROP NOT NULL;
             """)
 
+            cur.execute("""
+                ALTER TABLE spr_schedules
+                ALTER COLUMN playbook_id DROP NOT NULL;
+            """)
+
 
 def insert_audit_event(event: Dict[str, Any]) -> UUID:
     sql = """
