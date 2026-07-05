@@ -7,8 +7,7 @@ import {
   CorridorRiskState, ProcurementResponse,
   PricesResponse, AgentsStatusResponse, VesselsResponse,
   Playbook, ApprovePlaybookRequest, ApprovePlaybookResponse,
-  KGraphData, User, LoginRequest, LoginResponse,
-} from "../types";
+  KGraphData, User, LoginRequest, LoginResponse, RefineryGradeInfo, TankerETA, GradeSwitchOption, DeliveryScheduleDay, SystemHealth} from "../types";
 
 const delay = (ms: number) => new Promise((res) => setTimeout(res, ms));
 
@@ -224,4 +223,132 @@ export const getCurrentUser = async (): Promise<User | null> => {
   } catch {
     return null;
   }
+};
+// ── Refinery Operator endpoints (Day 12) ──────────────────────────────────────
+
+const MOCK_REFINERY_GRADES: RefineryGradeInfo[] = [
+  {
+    refinery_id: "jamnagar", refinery_name: "Jamnagar Complex (RIL)",
+    grades: [
+      { grade: "Arab Light",   status: "available", volume_mbd: 0.45 },
+      { grade: "Murban",       status: "available", volume_mbd: 0.30 },
+      { grade: "Urals",        status: "reduced",   volume_mbd: 0.12, note: "Diversification cap nearly reached" },
+      { grade: "Iranian Light",status: "disrupted", volume_mbd: 0.0,  note: "OFAC sanctions — sourcing halted" },
+    ],
+  },
+  {
+    refinery_id: "kochi_bpcl", refinery_name: "Kochi Refinery (BPCL)",
+    grades: [
+      { grade: "Arab Light", status: "available", volume_mbd: 0.18 },
+      { grade: "Murban",     status: "available", volume_mbd: 0.13 },
+    ],
+  },
+  {
+    refinery_id: "vadinar", refinery_name: "Vadinar (Nayara Energy)",
+    grades: [
+      { grade: "Arab Light", status: "available", volume_mbd: 0.20 },
+      { grade: "Urals",      status: "reduced",   volume_mbd: 0.08, note: "Cape route adds 12 days transit" },
+      { grade: "Basra Light",status: "available", volume_mbd: 0.12 },
+    ],
+  },
+];
+
+const MOCK_TANKER_ETAS: TankerETA[] = [
+  {
+    vessel_name: "PACIFIC STAR", vessel_type: "VLCC", origin: "Fujairah, UAE",
+    destination_port: "Vadinar", eta: new Date(Date.now() + 4 * 86400000).toISOString(),
+    cargo_grade: "Murban", volume_mbd: 0.15, current_lat: 23.1, current_lng: 61.4, status: "on_schedule",
+  },
+  {
+    vessel_name: "GULF EAGLE", vessel_type: "Suezmax", origin: "Ras Tanura, Saudi Arabia",
+    destination_port: "Jamnagar", eta: new Date(Date.now() + 6 * 86400000).toISOString(),
+    cargo_grade: "Arab Light", volume_mbd: 0.10, current_lat: 20.5, current_lng: 63.2, status: "on_schedule",
+  },
+  {
+    vessel_name: "NAYARA PRIDE", vessel_type: "VLCC", origin: "Novorossiysk, Russia",
+    destination_port: "Vadinar", eta: new Date(Date.now() + 14 * 86400000).toISOString(),
+    cargo_grade: "Urals", volume_mbd: 0.08, current_lat: 12.4, current_lng: 48.1, status: "delayed",
+  },
+  {
+    vessel_name: "KOCHI VOYAGER", vessel_type: "Aframax", origin: "Jebel Ali, UAE",
+    destination_port: "Kochi", eta: new Date(Date.now() + 8 * 86400000).toISOString(),
+    cargo_grade: "Murban", volume_mbd: 0.06, current_lat: 15.8, current_lng: 55.6, status: "on_schedule",
+  },
+];
+
+const MOCK_GRADE_SWITCHES: GradeSwitchOption[] = [
+  { refinery_id: "jamnagar",   refinery_name: "Jamnagar Complex",  from_grade: "Iranian Light", to_grade: "Murban",     feasible: true,  reason: "Fully compatible — both light sweet grades", switch_time_days: 2 },
+  { refinery_id: "jamnagar",   refinery_name: "Jamnagar Complex",  from_grade: "Urals",         to_grade: "Arab Light", feasible: true,  reason: "Fully compatible", switch_time_days: 1 },
+  { refinery_id: "kochi_bpcl", refinery_name: "Kochi Refinery",    from_grade: "Arab Light",    to_grade: "Basra Light",feasible: false, reason: "Kochi lacks coker unit for high-sulfur heavy crude" },
+  { refinery_id: "vadinar",    refinery_name: "Vadinar (Nayara)",  from_grade: "Urals",         to_grade: "Murban",     feasible: true,  reason: "Fully compatible", switch_time_days: 3 },
+];
+
+const MOCK_DELIVERY_SCHEDULE: DeliveryScheduleDay[] = Array.from({ length: 14 }).map((_, i) => {
+  const refineries = [
+    { id: "jamnagar", name: "Jamnagar Complex", grade: "Arab Light", vol: 0.45, source: "Saudi Aramco" },
+    { id: "kochi_bpcl", name: "Kochi Refinery", grade: "Murban", vol: 0.13, source: "ADNOC" },
+    { id: "vadinar", name: "Vadinar (Nayara)", grade: "Urals", vol: 0.08, source: "Rosneft" },
+  ];
+  const r = refineries[i % refineries.length];
+  return {
+    date: new Date(Date.now() + i * 86400000).toISOString().split("T")[0],
+    refinery_id: r.id, refinery_name: r.name, grade: r.grade,
+    volume_mbd: r.vol, source: r.source, confirmed: i < 7,
+  };
+});
+
+export const getRefineryGrades = async (): Promise<RefineryGradeInfo[]> => {
+  if (USE_MOCK) { await delay(300); return MOCK_REFINERY_GRADES; }
+  const res = await apiClient.get("/refinery/grades");
+  return res.data;
+};
+
+export const getTankerETAs = async (): Promise<TankerETA[]> => {
+  if (USE_MOCK) { await delay(300); return MOCK_TANKER_ETAS; }
+  const res = await apiClient.get("/refinery/tanker-etas");
+  return res.data;
+};
+
+export const getGradeSwitchOptions = async (): Promise<GradeSwitchOption[]> => {
+  if (USE_MOCK) { await delay(300); return MOCK_GRADE_SWITCHES; }
+  const res = await apiClient.get("/refinery/grade-switches");
+  return res.data;
+};
+
+export const getDeliverySchedule = async (): Promise<DeliveryScheduleDay[]> => {
+  if (USE_MOCK) { await delay(300); return MOCK_DELIVERY_SCHEDULE; }
+  const res = await apiClient.get("/refinery/delivery-schedule");
+  return res.data;
+};
+
+// ── Admin System Health endpoint (Day 12) ─────────────────────────────────────
+
+export const getSystemHealth = async (): Promise<SystemHealth> => {
+  if (USE_MOCK) {
+    await delay(300);
+    return {
+      agents: {
+        agent_1: { status: "RUNNING", last_run: new Date().toISOString() },
+        agent_2: { status: "IDLE",    last_run: new Date(Date.now() - 60000).toISOString() },
+        agent_3: { status: "IDLE",    last_run: new Date(Date.now() - 45000).toISOString() },
+        agent_4: { status: "INACTIVE", last_run: null },
+        agent_5: { status: "INACTIVE", last_run: null },
+        agent_6: { status: "INACTIVE", last_run: null },
+        agent_7: { status: "INACTIVE", last_run: null },
+        agent_8: { status: "INACTIVE", last_run: null },
+      },
+      redis_stream_depths: { "events:raw": 0, "events:verified": 0 },
+      postgres_pool: { active_connections: 4, max_connections: 20, status: "healthy" },
+      external_apis: [
+        { name: "GDELT",         last_success_at: new Date(Date.now() - 120000).toISOString(), status: "healthy", latency_ms: 340 },
+        { name: "UKMTO RSS",     last_success_at: new Date(Date.now() - 300000).toISOString(), status: "healthy", latency_ms: 210 },
+        { name: "OFAC SDN",      last_success_at: new Date(Date.now() - 3600000 * 5).toISOString(), status: "healthy", latency_ms: 890 },
+        { name: "Alpha Vantage", last_success_at: new Date(Date.now() - 300000).toISOString(), status: "healthy", latency_ms: 450 },
+        { name: "Gemini 2.5 Flash", last_success_at: null, status: "down", latency_ms: undefined },
+      ],
+      crisis_mode_active: false,
+    };
+  }
+  const res = await apiClient.get("/admin/system-health");
+  return res.data;
 };
