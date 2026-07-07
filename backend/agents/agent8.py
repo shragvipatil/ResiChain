@@ -326,8 +326,9 @@ def _build_refinery_view(simulation_result):
 
     highest_risk = None
     max_loss = 0.0
+
     for r in valid:
-        loss = r.get("utilization_loss_pct", 0.0) or 0.0
+        loss = abs(float(r.get("util_delta_pct", 0.0) or 0.0))
         if loss > max_loss:
             max_loss = loss
             highest_risk = r.get("refinery_name")
