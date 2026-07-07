@@ -125,6 +125,54 @@ async def _broadcast_node_complete(node_name: str, extra: Optional[dict] = None)
 
 
 # ---------------------------------------------------------------------------
+# Day 10 — per-node timing instrumentation
+# ---------------------------------------------------------------------------
+
+def _timed(node_name: str, fn):
+    """
+    Wraps a node function with start/end timestamps (Day 10, Person A:
+    "Instrument each LangGraph node with a start and end timestamp
+    written to PostgreSQL agent_runs table").
+
+    - ALWAYS logs the duration, so slowest-node analysis works from
+      docker logs immediately.
+    - ALSO tries to persist to Postgres agent_runs via
+      db.postgres_queries.insert_agent_run, but FAIL-SOFT: that table
+      and helper live in Person B's file and may not exist yet — a
+      missing helper/table must never break the pipeline itself.
+    """
+    async def wrapper(state):
+        started_at = datetime.utcnow()
+        try:
+            return await fn(state)
+        finally:
+            ended_at = datetime.utcnow()
+            duration_ms = int((ended_at - started_at).total_seconds() * 1000)
+            logger.info(
+                f"TIMING: node={node_name} duration_ms={duration_ms} "
+                f"start={started_at.isoformat()} end={ended_at.isoformat()}"
+            )
+            try:
+                from db.postgres_queries import insert_agent_run
+                await asyncio.to_thread(
+                    insert_agent_run,
+                    node_name,
+                    started_at,
+                    ended_at,
+                    duration_ms,
+                )
+            except ImportError:
+                # insert_agent_run not built yet (Person B, Day 10) —
+                # timings still available via the TIMING log lines above.
+                pass
+            except Exception as e:
+                logger.warning(f"TIMING: persist failed for {node_name}: {e}")
+
+    wrapper.__name__ = f"timed_{node_name}"
+    return wrapper
+
+
+# ---------------------------------------------------------------------------
 # Agent 5 async adapter (Agent 5 itself is a SYNC function — see Person B's
 # confirmation: agent5.py exposes plain `def`, not `async def`, including
 # run_agent5(). Running it directly inside an async node would block the
@@ -371,11 +419,11 @@ def build_crisis_graph_definition() -> StateGraph:
     """
     workflow = StateGraph(CrisisGraphState)
 
-    workflow.add_node("agent4", node_agent4)
-    workflow.add_node("agent5_first", node_agent5_first_pass)
-    workflow.add_node("agent6", node_agent6)
-    workflow.add_node("agent5_second", node_agent5_second_pass)
-    workflow.add_node("agent8", node_agent8_stub)
+    workflow.add_node("agent4", _timed("agent4", node_agent4))
+    workflow.add_node("agent5_first", _timed("agent5_first", node_agent5_first_pass))
+    workflow.add_node("agent6", _timed("agent6", node_agent6))
+    workflow.add_node("agent5_second", _timed("agent5_second", node_agent5_second_pass))
+    workflow.add_node("agent8", _timed("agent8", node_agent8_stub))
 
     workflow.set_entry_point("agent4")
 
