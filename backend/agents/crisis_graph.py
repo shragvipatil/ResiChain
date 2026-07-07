@@ -69,28 +69,37 @@ def _take_latest(existing, incoming):
 # ---------------------------------------------------------------------------
 
 class CrisisGraphState(TypedDict, total=False):
-    playbook_id: Annotated[str, _take_latest]
-    risk_vector: Annotated[Dict[str, float], _take_latest]
+    # NOTE on Optional[...] everywhere: LangGraph initializes each
+    # reducer-backed channel with the annotated type's default value —
+    # Annotated[str, reducer] initializes to str() == "", and the
+    # _take_latest reducer then PRESERVES that "" when the incoming
+    # value is None. Result: passing playbook_id=None into the graph
+    # delivered "" to every node, which Postgres rejected as an invalid
+    # UUID (InvalidTextRepresentation, observed live; reproduced and
+    # fix verified in a minimal standalone test). Optional[...] makes
+    # the channel default None instead, so None survives intact.
+    playbook_id: Annotated[Optional[str], _take_latest]
+    risk_vector: Annotated[Optional[Dict[str, float]], _take_latest]
 
     # Agent 4 output
     compound_risk: Annotated[Optional[float], _take_latest]
-    blocked_chokepoints: Annotated[List[str], _take_latest]
-    is_compound_event: Annotated[bool, _take_latest]
-    surviving_routes: Annotated[List[dict], _take_latest]
+    blocked_chokepoints: Annotated[Optional[List[str]], _take_latest]
+    is_compound_event: Annotated[Optional[bool], _take_latest]
+    surviving_routes: Annotated[Optional[List[dict]], _take_latest]
 
     # Agent 5 (first pass) — pre-Agent-6 rough estimate
-    surviving_routes_mbd: Annotated[List[float], _take_latest]
-    spr_schedule_first_pass: Annotated[dict, _take_latest]
+    surviving_routes_mbd: Annotated[Optional[List[float]], _take_latest]
+    spr_schedule_first_pass: Annotated[Optional[dict], _take_latest]
 
     # Agent 6 output (Agent 7 validation already embedded inside it)
-    procurement_result: Annotated[dict, _take_latest]
+    procurement_result: Annotated[Optional[dict], _take_latest]
 
     # Agent 5 (second pass, Fix 7) — re-run with Agent 6's approved volumes
-    approved_cargoes_mbd: Annotated[List[float], _take_latest]
-    spr_schedule_final: Annotated[dict, _take_latest]
+    approved_cargoes_mbd: Annotated[Optional[List[float]], _take_latest]
+    spr_schedule_final: Annotated[Optional[dict], _take_latest]
 
     # Agent 8 output
-    playbook: Annotated[dict, _take_latest]
+    playbook: Annotated[Optional[dict], _take_latest]
 
 
 # ---------------------------------------------------------------------------
@@ -399,17 +408,26 @@ async def run_crisis_graph(compiled_graph, risk_vector: dict, playbook_id: Optio
     Invokes the crisis graph. `compiled_graph` must be the graph already
     compiled with a checkpointer in main.py's lifespan (app.state.crisis_graph)
     — this function does not compile anything itself.
+
+    IMPORTANT — thread_id vs playbook_id are deliberately SEPARATE:
+    the checkpointer needs a unique thread_id per run, but that UUID must
+    NOT be injected into state as playbook_id. Every DB table Agent 5/6/7
+    write to has a foreign key from playbook_id to the playbooks table —
+    a fabricated UUID that exists in no playbook row violates that FK
+    (observed live: ForeignKeyViolation on spr_schedules). NULL is allowed
+    by the FK; a made-up non-NULL value is not. So until Agent 8 actually
+    creates playbook rows, playbook_id stays exactly what the caller
+    passed (usually None), and the random UUID serves only as thread_id.
     """
-    if playbook_id is None:
-        playbook_id = str(uuid4())
+    thread_id = playbook_id or str(uuid4())
 
     initial_state: CrisisGraphState = {
-        "playbook_id": playbook_id,
+        "playbook_id": playbook_id,  # stays None unless a REAL playbook exists
         "risk_vector": risk_vector,
     }
-    config = {"configurable": {"thread_id": playbook_id}}
+    config = {"configurable": {"thread_id": thread_id}}
 
-    logger.warning(f"Crisis graph: starting run for playbook_id={playbook_id}")
+    logger.warning(f"Crisis graph: starting run thread_id={thread_id} playbook_id={playbook_id}")
     result = await compiled_graph.ainvoke(initial_state, config=config)
-    logger.warning(f"Crisis graph: completed for playbook_id={playbook_id}")
+    logger.warning(f"Crisis graph: completed thread_id={thread_id}")
     return result 

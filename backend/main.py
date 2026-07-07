@@ -295,7 +295,19 @@ async def trigger_crisis_graph(request: Request):
 
     r = await get_redis()
     data = await r.get("risk:state")
-    risk_vector = _json.loads(data) if data else {}
+    raw = _json.loads(data) if data else {}
+
+    # Filter to numeric corridor scores only. Agent 3 also writes
+    # "updated_at" (ISO string) and "updated_corridors" (list) into
+    # risk:state — passing those through to Agent 4's `score >= 0.65`
+    # comparison raises TypeError (str vs float) and 500s the whole
+    # pipeline. Agent 4's own Redis reader filters exactly the same way;
+    # this endpoint bypasses that reader by injecting state directly, so
+    # it must apply the same filter. (Confirmed: isolation run with a
+    # clean numeric dict completes; API run with the raw payload fails.)
+    risk_vector = {
+        k: v for k, v in raw.items() if isinstance(v, (int, float))
+    }
 
     result = await run_crisis_graph(request.app.state.crisis_graph, risk_vector)
     return result
