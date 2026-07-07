@@ -3,6 +3,13 @@
 # Two-stage state machine: WATCH → CONFIRMED
 # Consumes from events:raw, publishes to events:verified
 # Fix 9: Event expiry for events older than 60 hours
+#
+# Day 11: hooks alerts.send_watch_email() on WATCH, and
+# alerts.send_confirmed_sms() on CONFIRMED. Both are fire-and-forget —
+# wrapped so an alert failure (missing users table, bad SMTP creds,
+# unverified Twilio number, etc.) can NEVER break event verification
+# itself. Alerts are a side effect of a state transition, not part of
+# its correctness.
 # ============================================================
 
 import math
@@ -145,6 +152,12 @@ async def _evaluate_corridor_state(corridor: str):
     """
     Evaluates current state for a corridor.
     Determines if WATCH or CONFIRMED threshold is crossed.
+
+    Day 11: fires the corresponding alert on a genuine stage
+    transition — WATCH gets an email, CONFIRMED gets an SMS (spec:
+    "CONFIRMED state transition only, not WATCH"). Both calls are
+    wrapped in try/except so an alerting failure never blocks
+    publishing the verified event itself.
     """
     events = _active_corridor_events.get(corridor, [])
     if not events:
@@ -201,6 +214,32 @@ async def _evaluate_corridor_state(corridor: str):
         f"VERIFIED EVENT: {corridor} → {stage} "
         f"(confidence={avg_confidence:.3f}, sources={unique_sources})"
     )
+
+    # ---- Day 11 alert hooks ----
+    # Fire-and-forget: an alerting failure (missing users table,
+    # SMTP/Twilio misconfiguration, etc.) must never affect the
+    # verification pipeline's own correctness or retry logic.
+    if stage == "WATCH":
+        try:
+            from services.alerts import send_watch_email
+            await send_watch_email(
+                corridor=corridor,
+                risk_score=avg_confidence,
+                source_count=n_sources,
+                timestamp=verified_event["timestamp"],
+            )
+        except Exception as e:
+            logger.error(f"Alert hook failed for WATCH ({corridor}): {e}")
+    elif stage == "CONFIRMED":
+        try:
+            from services.alerts import send_confirmed_sms
+            await send_confirmed_sms(
+                corridor=corridor,
+                risk_score=avg_confidence,
+                playbook_status="pending_generation",
+            )
+        except Exception as e:
+            logger.error(f"Alert hook failed for CONFIRMED ({corridor}): {e}")
 
 
 def _classify_event_type(event: dict) -> str:
@@ -275,4 +314,4 @@ async def _archive_expired_events(corridor: str, events: list):
                 "archived_at": datetime.utcnow(),
             })
     except Exception as e:
-        logger.error(f"Archive error: {e}")
+        logger.error(f"Archive error: {e}") 
