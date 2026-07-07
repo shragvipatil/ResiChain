@@ -306,11 +306,22 @@ async def _emit_risk_update(risk_vector: dict):
         logger.error(f"WebSocket broadcast error: {e}")
 
 
+def _is_numeric_score(value) -> bool:
+    """
+    True for real int/float values, EXCLUDING bool (bool is a subclass
+    of int in Python — isinstance(True, (int, float)) is True). Found
+    by Person B: a boolean metadata marker in risk:state was silently
+    passing the old isinstance(v, (int, float)) filter as if it were a
+    real corridor risk score.
+    """
+    return type(value) in (int, float)
+
+
 def _determine_system_mode(risk_vector: dict) -> str:
     scores = [
         v for k, v in risk_vector.items()
         if k not in ["updated_at", "updated_corridors"]
-        and isinstance(v, (int, float))
+        and _is_numeric_score(v)
     ]
     if not scores:
         return "NORMAL"
