@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import asyncio
+
 import json
 import logging
 from datetime import datetime, timezone
@@ -11,7 +11,7 @@ from agents.agent6 import run_agent6, CHOKEPOINT_SHORT_TO_FULL
 from agents.simulation import run_all as run_simulation
 from db.postgres_queries import insert_playbook
 from db.redis_client import get_redis
-from db.neo4j_queries import get_surviving_routes, get_all_supplier_grades
+
 
 logger = logging.getLogger(__name__)
 
