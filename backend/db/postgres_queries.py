@@ -139,6 +139,17 @@ def init_db() -> None:
             """)
 
             cur.execute("""
+                CREATE TABLE IF NOT EXISTS agent_runs (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    node_name TEXT NOT NULL,
+                    started_at TIMESTAMPTZ NOT NULL,
+                    ended_at TIMESTAMPTZ NOT NULL,
+                    duration_ms INTEGER NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+            """)
+
+            cur.execute("""
                 ALTER TABLE procurement_evaluations
                 ALTER COLUMN playbook_id DROP NOT NULL;
             """)
@@ -467,6 +478,40 @@ def insert_spr_schedule(
         "spr_remaining_mb": spr_remaining_mb,
         "infeasibility_warning": infeasibility_warning,
         "inputs_used": Jsonb(inputs_used or {}),
+    }
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            row = cur.fetchone()
+            return row["id"]
+
+
+def insert_agent_run(
+    node_name: str,
+    started_at,
+    ended_at,
+    duration_ms: int,
+) -> UUID:
+    sql = """
+        INSERT INTO agent_runs (
+            node_name,
+            started_at,
+            ended_at,
+            duration_ms
+        )
+        VALUES (
+            %(node_name)s,
+            %(started_at)s,
+            %(ended_at)s,
+            %(duration_ms)s
+        )
+        RETURNING id
+    """
+    params = {
+        "node_name": node_name,
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "duration_ms": duration_ms,
     }
     with get_connection() as conn:
         with conn.cursor() as cur:
