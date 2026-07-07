@@ -42,6 +42,21 @@ logger = logging.getLogger(__name__)
 RISK_SURVIVAL_THRESHOLD = 0.40  # corridors at/above this are considered "blocked"
 
 
+def _is_numeric_score(value) -> bool:
+    """
+    True for real int/float values, EXCLUDING bool.
+
+    Bug (found by Person B): bool is a subclass of int in Python, so
+    isinstance(True, (int, float)) is True. A boolean metadata marker
+    key sitting alongside real corridor risk scores in risk:state would
+    silently pass the old filter and get treated as a numeric risk
+    value (observed: a scenario-override boolean leaked into
+    blocked_chokepoints as if it were a real corridor). This helper
+    excludes bool explicitly.
+    """
+    return type(value) in (int, float)
+
+
 # Port -> Refinery mapping (matches Day 1 Neo4j seed)
 PORT_TO_REFINERY = {
     "Vadinar": "Jamnagar RIL",
@@ -253,7 +268,7 @@ async def _get_blocked_chokepoints() -> list:
         risk_data = json.loads(data)
         return [
             corridor for corridor, score in risk_data.items()
-            if isinstance(score, (int, float)) and score >= RISK_SURVIVAL_THRESHOLD
+            if _is_numeric_score(score) and score >= RISK_SURVIVAL_THRESHOLD
         ]
     except Exception as e:
         logger.error(f"Agent 6: Failed to read risk state: {e}")
@@ -279,7 +294,7 @@ async def _build_candidates(surviving_routes: list, blocked_chokepoints_short: l
         if data:
             risk_vector = {
                 k: v for k, v in json.loads(data).items()
-                if isinstance(v, (int, float))
+                if _is_numeric_score(v)
             }
     except Exception:
         pass

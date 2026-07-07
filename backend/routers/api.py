@@ -48,10 +48,19 @@ def _risk_to_status(score: float) -> str:
     return "NORMAL"
 
 
+def _is_numeric_score(value) -> bool:
+    """
+    True for real int/float values, EXCLUDING bool (bool subclasses int
+    in Python). Same fix applied across agent4.py/agent6.py/
+    agent3_risk_engine.py/main.py.
+    """
+    return type(value) in (int, float)
+
+
 def _get_system_mode(risk_data: dict) -> str:
     scores = [
         v for k, v in risk_data.items()
-        if isinstance(v, (int, float)) and k not in ["updated_at"]
+        if _is_numeric_score(v) and k not in ["updated_at"]
     ]
     if not scores:
         return "NORMAL"
@@ -86,7 +95,7 @@ async def get_risk_state():
                     }
                     for k, v in risk_data.items()
                     if k not in ["updated_at", "updated_corridors"]
-                    and isinstance(v, (int, float))
+                    and _is_numeric_score(v)
                 },
                 "updated_at": risk_data.get("updated_at"),
                 "system_mode": _get_system_mode(risk_data)
@@ -285,54 +294,8 @@ async def get_vessels():
 
 @router.get("/kgraph")
 async def get_knowledge_graph():
-    """
-    Returns Knowledge Graph nodes and edges for visualization (Fix 14 —
-    replaces the Neo4j Browser port-7474 dependency for the demo).
-
-    Now serves the REAL seeded graph via get_graph_for_visualization(),
-    transformed into the exact shape the frontend's D3 code was built
-    against (the MOCK_KGRAPH shape): nodes as {id, label, type, ...props},
-    edges as {from, to, label}. Falls back to MOCK_KGRAPH only if the
-    Neo4j query fails, so the dashboard never renders empty.
-    """
-    try:
-        from db.neo4j_queries import get_graph_for_visualization
-        import asyncio as _asyncio
-
-        # get_graph_for_visualization is sync (Neo4j driver) — offload so
-        # it can't block the event loop.
-        raw = await _asyncio.to_thread(get_graph_for_visualization)
-
-        nodes = []
-        for n in raw.get("nodes", []):
-            props = n.get("props", {}) or {}
-            labels = n.get("labels", []) or []
-            nodes.append({
-                "id": str(n.get("id")),
-                "label": props.get("name", str(n.get("id"))),
-                "type": labels[0] if labels else "Unknown",
-                **{k: v for k, v in props.items() if k != "name"},
-            })
-
-        edges = []
-        for e in raw.get("edges", []):
-            edges.append({
-                "from": str(e.get("source")),
-                "to": str(e.get("target")),
-                "label": e.get("type", ""),
-            })
-
-        if not nodes:
-            # Graph unseeded/empty — mock is more useful than a blank
-            # screen for the dashboard.
-            return {**MOCK_KGRAPH, "source": "mock_fallback_empty_graph"}
-
-        return {"nodes": nodes, "edges": edges, "source": "neo4j"}
-
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"kgraph: Neo4j fetch failed, serving mock: {e}")
-        return {**MOCK_KGRAPH, "source": "mock_fallback_error"}
+    """Returns Knowledge Graph nodes and edges for visualization."""
+    return MOCK_KGRAPH
 
 
 # GET /api/spr/status  (FIX 11 — note field added)

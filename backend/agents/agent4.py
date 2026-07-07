@@ -41,6 +41,17 @@ logger = logging.getLogger(__name__)
 
 CRISIS_THRESHOLD = 0.65  # matches Agent 3's CRISIS system-mode threshold
 
+def _is_numeric_score(value) -> bool:
+    """
+    True for real int/float values, EXCLUDING bool (bool is a subclass
+    of int in Python — isinstance(True, (int, float)) is True). Found
+    by Person B: a boolean metadata marker in risk:state was silently
+    passing the old isinstance(v, (int, float)) filter as if it were a
+    real corridor risk score.
+    """
+    return type(value) in (int, float)
+
+
 # Short Redis code -> full Neo4j Chokepoint.name.
 # Values match agent6.py's CHOKEPOINT_SHORT_TO_FULL exactly, as pulled from
 # Person B's pushed fix — keeping both files' mappings identical matters,
@@ -117,10 +128,11 @@ async def _get_risk_vector() -> Dict[str, float]:
             return {}
         raw = json.loads(data)
         # risk:state also carries "updated_at" / "updated_corridors" strings —
-        # filter to numeric corridor scores only.
+        # filter to numeric corridor scores only (and exclude bool, which
+        # isinstance(v, (int, float)) alone would wrongly accept).
         return {
             k: v for k, v in raw.items()
-            if isinstance(v, (int, float))
+            if _is_numeric_score(v)
         }
     except Exception as e:
         logger.error(f"Agent 4: Failed to read risk:state: {e}")

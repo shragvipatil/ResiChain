@@ -25,6 +25,15 @@ from agents.crisis_graph import build_crisis_graph_definition
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def _is_numeric_score(value) -> bool:
+    """
+    True for real int/float values, EXCLUDING bool (bool subclasses int
+    in Python). Same fix applied across agent4.py/agent6.py/
+    agent3_risk_engine.py/routers/api.py — a boolean metadata marker was
+    found leaking into risk-vector filtering as if it were a real score.
+    """
+    return type(value) in (int, float)
+
 # ---- Scheduler (APScheduler) --------------------------------
 # Runs background polling jobs (Agent 1 every 5 minutes)
 scheduler = AsyncIOScheduler()
@@ -306,7 +315,7 @@ async def trigger_crisis_graph(request: Request):
     # it must apply the same filter. (Confirmed: isolation run with a
     # clean numeric dict completes; API run with the raw payload fails.)
     risk_vector = {
-        k: v for k, v in raw.items() if isinstance(v, (int, float))
+        k: v for k, v in raw.items() if _is_numeric_score(v)
     }
 
     result = await run_crisis_graph(request.app.state.crisis_graph, risk_vector)
