@@ -322,6 +322,30 @@ def insert_playbook(
             return row["id"]
 
 
+def get_playbook_by_id(playbook_id: UUID) -> Optional[Dict[str, Any]]:
+    sql = """
+        SELECT
+            id,
+            signal_detected_at,
+            playbook_generated_at,
+            signal_to_playbook_seconds,
+            status,
+            ministry_view,
+            procurement_view,
+            refinery_view,
+            confidence,
+            inputs
+        FROM playbooks
+        WHERE id = %(playbook_id)s
+        LIMIT 1
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, {"playbook_id": playbook_id})
+            row = cur.fetchone()
+            return row if row is not None else None
+
+
 def insert_playbook_action(
     playbook_id: UUID,
     option_id: str,
@@ -484,6 +508,29 @@ def insert_spr_schedule(
             cur.execute(sql, params)
             row = cur.fetchone()
             return row["id"]
+
+
+def get_latest_spr_schedule() -> Optional[Dict[str, Any]]:
+    sql = """
+        SELECT
+            id,
+            playbook_id,
+            feasible,
+            daily_drawdown_schedule,
+            confidence,
+            spr_remaining_mb,
+            infeasibility_warning,
+            inputs_used,
+            created_at
+        FROM spr_schedules
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            row = cur.fetchone()
+            return row if row is not None else None
 
 
 def insert_agent_run(
