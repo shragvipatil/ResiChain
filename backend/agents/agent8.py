@@ -56,8 +56,8 @@ async def run_agent8(
 
     simulation_result = run_simulation(
         supplier_route_risks=supplier_route_risks,
-        closure_severity=closure_severity,
-        affected_chokepoint=affected_chokepoints,  # simulation.py must accept a list for compound scenarios
+        closure_severity={cp: closure_severity for cp in affected_chokepoints},  # or per-chokepoint dict if severities differ
+        affected_chokepoint=affected_chokepoints,
         refinery_names=refinery_names,
         brent_baseline_usd=brent_baseline_usd,
     )
