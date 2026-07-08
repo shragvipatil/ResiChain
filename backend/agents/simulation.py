@@ -137,25 +137,21 @@ def import_disruption(
     supplier_route_risks: List[Dict[str, Any]],
     chokepoint_severities: Dict[str, float],
 ) -> Dict[str, Any]:
-    """
-    chokepoint_severities: {chokepoint_name: severity} for one or more
-    simultaneously affected chokepoints. Supports compound scenarios.
-    """
     daily_consumption = _get_india_daily_consumption()
     spr_total_mb = get_spr_total_volume()
 
-    affected_lookup = {cp.strip().lower(): sev for cp, sev in chokepoint_severities.items()}
+    affected_lookup = {cp.strip().lower() for cp in chokepoint_severities.keys()}
+    compound_severity = compute_compound_severity(chokepoint_severities)
 
     disrupted_share = 0.0
     disrupted_suppliers: List[str] = []
 
     for entry in supplier_route_risks:
         chokepoint = str(entry.get("primary_chokepoint", "")).strip().lower()
-        severity = affected_lookup.get(chokepoint)
-        if severity is not None:
+        if chokepoint in affected_lookup:
             share = float(entry["import_share"])
             risk = float(entry["route_risk"])
-            disrupted_share += share * risk * float(severity)
+            disrupted_share += share * risk * compound_severity
             disrupted_suppliers.append(entry["supplier"])
 
     disrupted_share = min(1.0, disrupted_share)

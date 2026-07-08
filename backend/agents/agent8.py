@@ -22,7 +22,7 @@ _FULL_TO_SHORT = {full: short for short, full in CHOKEPOINT_SHORT_TO_FULL.items(
 
 async def run_agent8(
     affected_chokepoints: List[str],
-    closure_severity: float = 1.0,
+    closure_severity: Any = 1.0,
     signal_detected_at: Optional[datetime] = None,
     refinery_names: Optional[List[str]] = None,
     brent_baseline_usd: Optional[float] = None,
@@ -41,7 +41,9 @@ async def run_agent8(
       doesn't cascade into the emergency Brent fallback.
     - Supports compound multi-chokepoint scenarios (e.g. Hormuz + Red
       Sea simultaneously) by threading affected_chokepoints as a list
-      end-to-end.
+      end-to-end. closure_severity accepts either a single float
+      (applied uniformly to all chokepoints) or a Dict[str, float]
+      (per-chokepoint severity, required for accurate compound math).
     """
     logger.info("Agent 8: starting playbook generation for %s", affected_chokepoints)
 
@@ -54,9 +56,17 @@ async def run_agent8(
     # ------------------------------------------------------------
     supplier_route_risks = _build_supplier_route_risks(affected_chokepoints, closure_severity)
 
+    # Normalize closure_severity into a per-chokepoint dict before
+    # passing to simulation.run_all() — this is the fix for the
+    # TypeError caused by double-wrapping an already-dict severity.
+    if isinstance(closure_severity, dict):
+        normalized_severity = closure_severity
+    else:
+        normalized_severity = {cp: closure_severity for cp in affected_chokepoints}
+
     simulation_result = run_simulation(
         supplier_route_risks=supplier_route_risks,
-        closure_severity={cp: closure_severity for cp in affected_chokepoints},  # or per-chokepoint dict if severities differ
+        closure_severity=normalized_severity,
         affected_chokepoint=affected_chokepoints,
         refinery_names=refinery_names,
         brent_baseline_usd=brent_baseline_usd,
@@ -66,7 +76,7 @@ async def run_agent8(
     # Step 2 — Non-destructive risk:state injection, then Agent 6
     # ------------------------------------------------------------
     original_risk_state = await _snapshot_risk_state()
-    await _inject_scenario_risk_state(affected_chokepoints, closure_severity, original_risk_state)
+    await _inject_scenario_risk_state(affected_chokepoints, normalized_severity, original_risk_state)
 
     try:
         procurement_result = await run_agent6(playbook_id=None)
@@ -99,8 +109,6 @@ async def run_agent8(
     # ------------------------------------------------------------
     # Step 4 — Build views
     # ------------------------------------------------------------
-    chokepoint_display = ", ".join(affected_chokepoints)
-
     ministry_view = _build_ministry_view(
         affected_chokepoints=affected_chokepoints,
         closure_severity=closure_severity,
@@ -180,7 +188,7 @@ async def _snapshot_risk_state() -> Optional[Dict[str, Any]]:
 
 async def _inject_scenario_risk_state(
     affected_chokepoints: List[str],
-    closure_severity: float,
+    closure_severity: Any,
     original_state: Optional[Dict[str, Any]],
 ) -> None:
     """
@@ -188,11 +196,20 @@ async def _inject_scenario_risk_state(
     Agent 6 sees the correct severity for every affected chokepoint
     while other corridors keep their real ambient values. Restored
     immediately after Agent 6 runs — see _restore_risk_state.
+
+    closure_severity may be a single float (applied uniformly) or a
+    Dict[str, float] (per-chokepoint severity).
     """
     scenario_state = dict(original_state) if original_state else {}
+
+    if isinstance(closure_severity, dict):
+        severity_map = closure_severity
+    else:
+        severity_map = {cp: closure_severity for cp in affected_chokepoints}
+
     for cp in affected_chokepoints:
         short_name = _FULL_TO_SHORT.get(cp, cp)
-        scenario_state[short_name] = float(closure_severity)
+        scenario_state[short_name] = float(severity_map.get(cp, 0.0))
 
     try:
         r = await get_redis()
@@ -220,7 +237,7 @@ async def _restore_risk_state(original_state: Optional[Dict[str, Any]]) -> None:
 # ------------------------------------------------------------
 
 
-def _build_supplier_route_risks(affected_chokepoints: List[str], closure_severity: float) -> list:
+def _build_supplier_route_risks(affected_chokepoints: List[str], closure_severity: Any) -> list:
     """
     Build the exact contract expected by simulation.import_disruption():
     [
