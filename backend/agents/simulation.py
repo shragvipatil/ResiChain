@@ -106,26 +106,59 @@ def _get_india_daily_consumption() -> float:
         return _EIA_INDIA_CONSUMPTION_MBD
 
 
+def compute_compound_severity(chokepoint_severities: Dict[str, float]) -> float:
+    """
+    Compound risk formula for multiple simultaneous chokepoint closures.
+
+    Each chokepoint's severity represents the fraction of its route
+    capacity that is disrupted (e.g. 0.82 = 82% closed). The compound
+    formula treats each chokepoint's "surviving fraction" (1 - severity)
+    as independent, and the overall compound severity is:
+
+        compound_severity = 1 - product(1 - severity_i for each chokepoint)
+
+    Example: Hormuz at 0.82, Red Sea at 0.87
+        surviving_a = 1 - 0.82 = 0.18
+        surviving_b = 1 - 0.87 = 0.13
+        compound_severity = 1 - (0.18 * 0.13) = 1 - 0.0234 = 0.9766
+    """
+    if not chokepoint_severities:
+        return 0.0
+
+    surviving_product = 1.0
+    for severity in chokepoint_severities.values():
+        surviving_product *= (1.0 - float(severity))
+
+    compound_severity = 1.0 - surviving_product
+    return round(compound_severity, 4)
+
+
 def import_disruption(
     supplier_route_risks: List[Dict[str, Any]],
-    closure_severity: float,
-    affected_chokepoint: str,
+    chokepoint_severities: Dict[str, float],
 ) -> Dict[str, Any]:
+    """
+    chokepoint_severities: {chokepoint_name: severity} for one or more
+    simultaneously affected chokepoints. Supports compound scenarios.
+    """
     daily_consumption = _get_india_daily_consumption()
     spr_total_mb = get_spr_total_volume()
+
+    affected_lookup = {cp.strip().lower(): sev for cp, sev in chokepoint_severities.items()}
 
     disrupted_share = 0.0
     disrupted_suppliers: List[str] = []
 
     for entry in supplier_route_risks:
         chokepoint = str(entry.get("primary_chokepoint", "")).strip().lower()
-        if chokepoint == affected_chokepoint.strip().lower():
+        severity = affected_lookup.get(chokepoint)
+        if severity is not None:
             share = float(entry["import_share"])
             risk = float(entry["route_risk"])
-            disrupted_share += share * risk
+            disrupted_share += share * risk * float(severity)
             disrupted_suppliers.append(entry["supplier"])
 
-    disrupted_share = min(1.0, disrupted_share * closure_severity)
+    disrupted_share = min(1.0, disrupted_share)
     import_gap_mbd = disrupted_share * daily_consumption
     days_to_depletion = spr_total_mb / import_gap_mbd if import_gap_mbd > 0.001 else float("inf")
 
@@ -223,12 +256,27 @@ def refinery_utilization(
 
 def run_all(
     supplier_route_risks: List[Dict[str, Any]],
-    closure_severity: float,
-    affected_chokepoint: str,
+    closure_severity: Any,
+    affected_chokepoint: Any,
     refinery_names: Optional[List[str]] = None,
     brent_baseline_usd: Optional[float] = None,
     beta: float = 0.45,
 ) -> Dict[str, Any]:
+    """
+    Supports both single-chokepoint and compound multi-chokepoint calls:
+
+    Single (legacy):
+        run_all(risks, closure_severity=1.0, affected_chokepoint="Strait of Hormuz")
+
+    Compound:
+        run_all(
+            risks,
+            closure_severity={"Strait of Hormuz": 0.82, "Bab-el-Mandeb": 0.87},
+            affected_chokepoint=["Strait of Hormuz", "Bab-el-Mandeb"],
+        )
+        # OR pass closure_severity as a single float applied to all chokepoints
+        # in the affected_chokepoint list.
+    """
     import datetime
 
     if refinery_names is None:
@@ -239,10 +287,25 @@ def run_all(
             "Paradip IOCL",
         ]
 
+    # Normalize affected_chokepoint into a list
+    if isinstance(affected_chokepoint, str):
+        chokepoint_list = [affected_chokepoint]
+    else:
+        chokepoint_list = list(affected_chokepoint)
+
+    # Normalize closure_severity into a per-chokepoint dict
+    if isinstance(closure_severity, dict):
+        chokepoint_severities = {cp: float(closure_severity.get(cp, 0.0)) for cp in chokepoint_list}
+    elif isinstance(closure_severity, (list, tuple)):
+        chokepoint_severities = {cp: float(sev) for cp, sev in zip(chokepoint_list, closure_severity)}
+    else:
+        chokepoint_severities = {cp: float(closure_severity) for cp in chokepoint_list}
+
+    compound_severity = compute_compound_severity(chokepoint_severities)
+
     disruption_result = import_disruption(
         supplier_route_risks=supplier_route_risks,
-        closure_severity=closure_severity,
-        affected_chokepoint=affected_chokepoint,
+        chokepoint_severities=chokepoint_severities,
     )
 
     import_gap_mbd = disruption_result["import_gap_mbd"]
@@ -251,7 +314,7 @@ def run_all(
     spr_result = spr_drawdown(import_gap_mbd=import_gap_mbd)
 
     price_result = price_impact(
-        disruption_severity=closure_severity,
+        disruption_severity=compound_severity,
         supply_gap_pct=disrupted_share * 100,
         brent_baseline_usd=brent_baseline_usd,
         beta=beta,
@@ -276,8 +339,9 @@ def run_all(
         "price": price_result,
         "refineries": refinery_results,
         "meta": {
-            "affected_chokepoint": affected_chokepoint,
-            "closure_severity": closure_severity,
+            "affected_chokepoints": chokepoint_list,
+            "chokepoint_severities": chokepoint_severities,
+            "compound_severity": compound_severity,
             "beta": beta,
             "simulated_at": datetime.datetime.utcnow().isoformat() + "Z",
         },
