@@ -101,24 +101,31 @@ def upsert_documents(documents: list[str], metadatas: list[dict[str, Any]] | Non
     if not documents:
         return collection.count()
 
-    cleaned_docs = [doc.strip() for doc in documents if doc and doc.strip()]
-    if not cleaned_docs:
+    paired: list[tuple[str, dict[str, Any]]] = []
+    if metadatas is None:
+        metadatas = [{} for _ in documents]
+
+    if len(metadatas) != len(documents):
+        raise ValueError("Length of metadatas must match length of documents.")
+
+    for doc, meta in zip(documents, metadatas):
+        cleaned = (doc or "").strip()
+        if cleaned:
+            paired.append((cleaned, meta or {}))
+
+    if not paired:
         return collection.count()
 
+    cleaned_docs = [doc for doc, _ in paired]
+    cleaned_metas = [meta for _, meta in paired]
     ids = [hash_document(doc) for doc in cleaned_docs]
     embeddings = embed_texts(cleaned_docs)
-
-    if metadatas is None:
-        metadatas = [{} for _ in cleaned_docs]
-
-    if len(metadatas) != len(cleaned_docs):
-        raise ValueError("Length of metadatas must match length of documents.")
 
     collection.upsert(
         ids=ids,
         documents=cleaned_docs,
         embeddings=embeddings,
-        metadatas=metadatas,
+        metadatas=cleaned_metas,
     )
     return collection.count()
 

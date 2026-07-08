@@ -115,7 +115,12 @@ def startup() -> None:
 def _load_spacy():
     global _nlp
     if _nlp is None:
-        _nlp = spacy.load("en_core_web_sm")
+        try:
+            _nlp = spacy.load("en_core_web_sm")
+        except OSError as exc:
+            raise RuntimeError(
+                "spaCy model 'en_core_web_sm' is not installed in the container"
+            ) from exc
     return _nlp
 
 
@@ -189,10 +194,6 @@ async def _call_gemini(prompt: str) -> dict | None:
 
     for attempt in range(MAX_RETRIES):
         try:
-            # New SDK's async interface (client.aio) — genuinely
-            # non-blocking, unlike the old SDK's generate_content()
-            # which was sync-only and had to be run directly (blocking
-            # the event loop) or wrapped in asyncio.to_thread.
             response = await _gemini_client.aio.models.generate_content(
                 model=GEMINI_MODEL,
                 contents=prompt,
@@ -201,7 +202,10 @@ async def _call_gemini(prompt: str) -> dict | None:
                     temperature=0.0,
                 ),
             )
-            return json.loads(response.text.strip())
+            text = getattr(response, "text", None)
+            if not text:
+                raise ValueError("Gemini returned empty response text")
+            return json.loads(text.strip())
         except Exception as exc:
             logger.warning("Gemini attempt %d failed: %s", attempt + 1, exc)
             if attempt < MAX_RETRIES - 1:
