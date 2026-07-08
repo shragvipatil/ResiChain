@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 import json
 import logging
 from datetime import datetime, timezone
@@ -22,7 +21,7 @@ _FULL_TO_SHORT = {full: short for short, full in CHOKEPOINT_SHORT_TO_FULL.items(
 
 
 async def run_agent8(
-    affected_chokepoint: str,
+    affected_chokepoints: List[str],
     closure_severity: float = 1.0,
     signal_detected_at: Optional[datetime] = None,
     refinery_names: Optional[List[str]] = None,
@@ -40,8 +39,11 @@ async def run_agent8(
       empty placeholder.
     - Relies on price_history being seeded so a cold Redis price cache
       doesn't cascade into the emergency Brent fallback.
+    - Supports compound multi-chokepoint scenarios (e.g. Hormuz + Red
+      Sea simultaneously) by threading affected_chokepoints as a list
+      end-to-end.
     """
-    logger.info("Agent 8: starting playbook generation for %s", affected_chokepoint)
+    logger.info("Agent 8: starting playbook generation for %s", affected_chokepoints)
 
     if signal_detected_at is None:
         signal_detected_at = datetime.now(timezone.utc)
@@ -50,12 +52,12 @@ async def run_agent8(
     # Step 1 — Derive disrupted suppliers from Neo4j (root-cause fix
     # for simulation receiving an empty supplier_route_risks list)
     # ------------------------------------------------------------
-    supplier_route_risks = _build_supplier_route_risks(affected_chokepoint, closure_severity)
+    supplier_route_risks = _build_supplier_route_risks(affected_chokepoints, closure_severity)
 
     simulation_result = run_simulation(
         supplier_route_risks=supplier_route_risks,
         closure_severity=closure_severity,
-        affected_chokepoint=affected_chokepoint,
+        affected_chokepoint=affected_chokepoints,  # simulation.py must accept a list for compound scenarios
         refinery_names=refinery_names,
         brent_baseline_usd=brent_baseline_usd,
     )
@@ -64,7 +66,7 @@ async def run_agent8(
     # Step 2 — Non-destructive risk:state injection, then Agent 6
     # ------------------------------------------------------------
     original_risk_state = await _snapshot_risk_state()
-    await _inject_scenario_risk_state(affected_chokepoint, closure_severity, original_risk_state)
+    await _inject_scenario_risk_state(affected_chokepoints, closure_severity, original_risk_state)
 
     try:
         procurement_result = await run_agent6(playbook_id=None)
@@ -82,7 +84,7 @@ async def run_agent8(
     approved_cargoes_mbd = [round(approved_volume_mbd, 4)] * SPR_HORIZON_DAYS
 
     # ------------------------------------------------------------
-    # Step 3 — Agent 5 (SPR feasibility)
+    # Step 3 — Agent 5 (SPR feasibility) — synchronous, no await
     # ------------------------------------------------------------
     try:
         spr_state = run_agent5({
@@ -97,8 +99,10 @@ async def run_agent8(
     # ------------------------------------------------------------
     # Step 4 — Build views
     # ------------------------------------------------------------
+    chokepoint_display = ", ".join(affected_chokepoints)
+
     ministry_view = _build_ministry_view(
-        affected_chokepoint=affected_chokepoint,
+        affected_chokepoints=affected_chokepoints,
         closure_severity=closure_severity,
         simulation_result=simulation_result,
         spr_result=spr_result,
@@ -113,7 +117,7 @@ async def run_agent8(
     status = _determine_status(spr_result, procurement_result)
 
     inputs = {
-        "affected_chokepoint": affected_chokepoint,
+        "affected_chokepoints": affected_chokepoints,
         "closure_severity": closure_severity,
         "approved_volume_mbd": round(approved_volume_mbd, 4),
         "supplier_route_risks": supplier_route_risks,
@@ -163,6 +167,7 @@ async def run_agent8(
 # Scenario state injection (non-destructive)
 # ------------------------------------------------------------
 
+
 async def _snapshot_risk_state() -> Optional[Dict[str, Any]]:
     try:
         r = await get_redis()
@@ -174,25 +179,25 @@ async def _snapshot_risk_state() -> Optional[Dict[str, Any]]:
 
 
 async def _inject_scenario_risk_state(
-    affected_chokepoint: str,
+    affected_chokepoints: List[str],
     closure_severity: float,
     original_state: Optional[Dict[str, Any]],
 ) -> None:
     """
     Overlays the active scenario ON TOP of the live feed's snapshot so
-    Agent 6 sees the correct severity for this chokepoint while other
-    corridors keep their real ambient values. Restored immediately
-    after Agent 6 runs — see _restore_risk_state.
+    Agent 6 sees the correct severity for every affected chokepoint
+    while other corridors keep their real ambient values. Restored
+    immediately after Agent 6 runs — see _restore_risk_state.
     """
-    short_name = _FULL_TO_SHORT.get(affected_chokepoint, affected_chokepoint)
     scenario_state = dict(original_state) if original_state else {}
-    scenario_state[short_name] = float(closure_severity)
-
+    for cp in affected_chokepoints:
+        short_name = _FULL_TO_SHORT.get(cp, cp)
+        scenario_state[short_name] = float(closure_severity)
 
     try:
         r = await get_redis()
         await r.set("risk:state", json.dumps(scenario_state))
-        logger.info("Agent 8: injected scenario risk:state[%s]=%s", short_name, closure_severity)
+        logger.info("Agent 8: injected scenario risk:state for %s", affected_chokepoints)
     except Exception as exc:
         logger.error("Agent 8: failed to inject risk:state: %s", exc)
 
@@ -214,7 +219,8 @@ async def _restore_risk_state(original_state: Optional[Dict[str, Any]]) -> None:
 # Supplier-risk derivation (root-cause fix for simulation)
 # ------------------------------------------------------------
 
-def _build_supplier_route_risks(affected_chokepoint: str, closure_severity: float) -> list:
+
+def _build_supplier_route_risks(affected_chokepoints: List[str], closure_severity: float) -> list:
     """
     Build the exact contract expected by simulation.import_disruption():
     [
@@ -227,30 +233,38 @@ def _build_supplier_route_risks(affected_chokepoint: str, closure_severity: floa
         ...
     ]
 
-    For the current demo, suppliers whose surviving route disappears when the
-    chokepoint is blocked are treated as disrupted by that chokepoint.
-    Since simulation.import_disruption() multiplies import_share * route_risk
-    and then applies closure_severity once more at the end, route_risk here
-    should be 1.0 for a supplier fully exposed to the affected chokepoint.
+    Supports compound multi-chokepoint scenarios: a supplier is
+    disrupted if its MODELED route intersects ANY of the affected
+    chokepoints. Suppliers with no route data at all in the KG are
+    never treated as disrupted (root-cause fix for the false-positive
+    USA/Venezuela inflation bug).
     """
-    from db.neo4j_queries import get_surviving_routes, get_all_supplier_grades, get_supplier_current_share
+    from db.neo4j_queries import get_surviving_routes, get_supplier_route_chokepoints, get_supplier_current_share
 
     try:
-        surviving = get_surviving_routes([affected_chokepoint])
+        surviving = get_surviving_routes(affected_chokepoints)
         surviving_suppliers = {r["supplier"] for r in surviving}
     except Exception as exc:
         logger.error("Agent 8: get_surviving_routes failed: %s", exc)
         return []
 
     try:
-        all_suppliers = {g["supplier"] for g in get_all_supplier_grades()}
+        route_map = get_supplier_route_chokepoints()
     except Exception as exc:
-        logger.error("Agent 8: get_all_supplier_grades failed: %s", exc)
-        all_suppliers = surviving_suppliers
+        logger.error("Agent 8: get_supplier_route_chokepoints failed: %s", exc)
+        return []
 
-    disrupted_suppliers = all_suppliers - surviving_suppliers
+    affected_set = {_FULL_TO_SHORT.get(cp, cp) for cp in affected_chokepoints}
+    affected_set |= set(affected_chokepoints)
+
+    disrupted_suppliers = {
+        supplier
+        for supplier, chokepoints in route_map.items()
+        if set(chokepoints) & affected_set
+        and supplier not in surviving_suppliers
+    }
+
     supplier_route_risks = []
-
     for supplier in sorted(disrupted_suppliers):
         try:
             import_share = float(get_supplier_current_share(supplier))
@@ -262,9 +276,12 @@ def _build_supplier_route_risks(affected_chokepoint: str, closure_severity: floa
             )
             import_share = 0.0
 
+        hit_chokepoints = set(route_map[supplier]) & affected_set
+        primary_chokepoint = next(iter(hit_chokepoints))
+
         supplier_route_risks.append({
             "supplier": supplier,
-            "primary_chokepoint": affected_chokepoint,
+            "primary_chokepoint": primary_chokepoint,
             "import_share": import_share,
             "route_risk": 1.0,
         })
@@ -276,7 +293,8 @@ def _build_supplier_route_risks(affected_chokepoint: str, closure_severity: floa
 # View builders
 # ------------------------------------------------------------
 
-def _build_ministry_view(affected_chokepoint, closure_severity, simulation_result, spr_result, procurement_result):
+
+def _build_ministry_view(affected_chokepoints, closure_severity, simulation_result, spr_result, procurement_result):
     disruption = simulation_result.get("disruption", {})
     price = simulation_result.get("price", {})
 
@@ -286,9 +304,11 @@ def _build_ministry_view(affected_chokepoint, closure_severity, simulation_resul
     elif procurement_result.get("approved_count", 0) > 0 and spr_result.get("feasible", False):
         posture = "MONITOR_AND_EXECUTE"
 
+    chokepoint_display = ", ".join(affected_chokepoints)
+
     return {
-        "headline": f"Contingency playbook activated for {affected_chokepoint} disruption",
-        "affected_chokepoint": affected_chokepoint,
+        "headline": f"Contingency playbook activated for {chokepoint_display} disruption",
+        "affected_chokepoints": affected_chokepoints,
         "closure_severity": closure_severity,
         "import_gap_mbd": disruption.get("import_gap_mbd"),
         "disrupted_share": disruption.get("disrupted_share"),

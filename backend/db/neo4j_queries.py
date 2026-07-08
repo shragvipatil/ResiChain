@@ -235,3 +235,17 @@ def get_graph_for_visualization() -> Dict[str, Any]:
         "nodes": _run_query(nodes_query),
         "edges": _run_query(rels_query),
     }
+
+def get_supplier_route_chokepoints() -> Dict[str, List[str]]:
+    """
+    Returns {supplier_name: [chokepoint_name, ...]} for every supplier that
+    has at least one route modeled in the KG. Suppliers absent from this
+    dict have NO route data at all and must never be treated as disrupted
+    by any chokepoint closure.
+    """
+    query = """
+    MATCH (s:Supplier)-[:SHIPS_VIA]->(r:Route)-[:PASSES_THROUGH]->(c:Chokepoint)
+    RETURN s.name AS supplier, collect(DISTINCT c.name) AS chokepoints
+    """
+    rows = _run_query(query)
+    return {row["supplier"]: row["chokepoints"] for row in rows}
