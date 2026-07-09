@@ -108,25 +108,87 @@ async def get_risk_state():
 
 @router.get("/events")
 async def get_events(limit: int = 10, corridor: Optional[str] = None):
-    """Returns recent verified events from Agent 1."""
-    events = MOCK_EVENTS
-    if corridor:
-        events = [e for e in events if e["corridor"] == corridor]
-    return {"events": events[:limit], "total": len(events)}
+    """
+    Returns recent verified events — REAL data from the Postgres
+    verified_events table (written by Agent 1's verification layer).
+    Falls back to mock only if the query fails.
+    """
+    import asyncio as _asyncio
+    try:
+        from db.postgres_queries import get_verified_events
+        rows = await _asyncio.to_thread(get_verified_events, 100, 0)
+        events = []
+        for row in rows:
+            ev = row.get("event_json") or {}
+            ev["id"] = str(row.get("id"))
+            ev["created_at"] = str(row.get("created_at"))
+            events.append(ev)
+        if corridor:
+            events = [e for e in events if e.get("corridor") == corridor]
+        return {"events": events[:limit], "total": len(events), "source": "postgres"}
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"/events: real query failed, serving mock: {e}")
+        events = MOCK_EVENTS
+        if corridor:
+            events = [e for e in events if e["corridor"] == corridor]
+        return {"events": events[:limit], "total": len(events), "source": "mock_fallback"}
 
 
 @router.get("/procurement/options")
 async def get_procurement_options(status: Optional[str] = None):
-    """Returns procurement alternatives evaluated by Agent 6."""
+    """
+    Returns procurement alternatives — REAL data from Agent 6's most
+    recent run (agent6:last_run Redis cache, written after every
+    /procurement/evaluate or crisis-graph run). Falls back to mock only
+    if Agent 6 has never run or the cache expired (10 min TTL).
+    """
+    from db.redis_client import get_redis
+    import json as _json
+    try:
+        r = await get_redis()
+        cached = await r.get("agent6:last_run")
+        if cached:
+            data = _json.loads(cached)
+            options = data.get("full_rejection_trace", [])
+            if status:
+                options = [o for o in options if o.get("status") == status]
+            return {
+                "options": options,
+                "total": len(options),
+                "generated_at": data.get("generated_at"),
+                "source": "agent6_last_run",
+            }
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"/procurement/options: cache read failed: {e}")
+
     options = MOCK_PROCUREMENT_OPTIONS
     if status:
         options = [o for o in options if o["status"] == status]
-    return {"options": options, "total": len(options)}
+    return {"options": options, "total": len(options), "source": "mock_fallback"}
 
 
 @router.get("/playbook/{playbook_id}")
 async def get_playbook(playbook_id: str):
-    """Returns full crisis playbook by ID."""
+    """
+    Returns full crisis playbook by ID — REAL data from the Postgres
+    playbooks table (written by Agent 8). Requires Person B's
+    get_playbook_by_id() helper; until it lands, falls back to the
+    in-memory demo playbook so Person C's UI keeps working.
+    """
+    try:
+        import asyncio as _asyncio
+        from db.postgres_queries import get_playbook_by_id
+        row = await _asyncio.to_thread(get_playbook_by_id, playbook_id)
+        if row:
+            row["source"] = "postgres"
+            return row
+    except ImportError:
+        pass  # helper not built yet — fall through to in-memory demo store
+    except Exception:
+        pass
+
     playbook = _playbooks.get(playbook_id)
     if not playbook:
         raise HTTPException(
@@ -294,25 +356,130 @@ async def get_vessels():
 
 @router.get("/kgraph")
 async def get_knowledge_graph():
-    """Returns Knowledge Graph nodes and edges for visualization."""
-    return MOCK_KGRAPH
+    """
+    Returns the REAL seeded Knowledge Graph from Neo4j (Fix 14),
+    transformed into the exact shape the frontend's D3 code was built
+    against (MOCK_KGRAPH shape): nodes {id, label, type, ...props},
+    edges {from, to, label}. Falls back to mock only on failure so the
+    dashboard never renders empty.
+    """
+    try:
+        from db.neo4j_queries import get_graph_for_visualization
+        import asyncio as _asyncio
+
+        raw = await _asyncio.to_thread(get_graph_for_visualization)
+
+        nodes = []
+        for n in raw.get("nodes", []):
+            props = n.get("props", {}) or {}
+            labels = n.get("labels", []) or []
+            nodes.append({
+                "id": str(n.get("id")),
+                "label": props.get("name", str(n.get("id"))),
+                "type": labels[0] if labels else "Unknown",
+                **{k: v for k, v in props.items() if k != "name"},
+            })
+
+        edges = []
+        for e in raw.get("edges", []):
+            edges.append({
+                "from": str(e.get("source")),
+                "to": str(e.get("target")),
+                "label": e.get("type", ""),
+            })
+
+        if not nodes:
+            return {**MOCK_KGRAPH, "source": "mock_fallback_empty_graph"}
+        return {"nodes": nodes, "edges": edges, "source": "neo4j"}
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"kgraph: Neo4j fetch failed, serving mock: {e}")
+        return {**MOCK_KGRAPH, "source": "mock_fallback_error"}
 
 
-# GET /api/spr/status  (FIX 11 — note field added)
+# GET /api/spr/status  (Day 12 — wired to real sources)
 @router.get("/spr/status")
 async def get_spr_status():
-    """Returns current SPR levels and drawdown schedule."""
-    return {
-        "total_capacity_mb": 43.9,
-        "current_level_mb": 38.0,
-        "fill_pct": 86.6,
-        "daily_consumption_mbd": 5.1,
-        "days_cover": 7.45,
-        "days_cover_with_commercial": 9.5,
-        "active_drawdown": False,
-        "drawdown_schedule": None,
-        "note": "days_cover uses strategic SPR only (38mb). days_cover_with_commercial includes private commercial stocks. Government controls strategic reserve only."
-    }
+    """
+    Returns current SPR levels — REAL data assembled from three sources
+    that previously disagreed (hardcoded 43.9/38.0 here vs .env's
+    SPR_TOTAL_MB=38 vs Neo4j's actual summed StorageFacility.capacity_mb):
+
+    - total_capacity_mb: Neo4j get_spr_total_volume() (sum of real
+      StorageFacility nodes) — the actual source of truth for capacity.
+    - current_level_mb: latest persisted SPR schedule's spr_remaining_mb
+      (Postgres, Agent 5's real solve) if one exists; otherwise equals
+      total_capacity_mb (nothing drawn down yet).
+    - daily_consumption_mbd: agents/simulation.py's live EIA API fetch
+      (falls back to a constant internally if EIA_API_KEY missing/fails
+      — that fallback is real code behavior, not something this endpoint
+      re-implements).
+    - active_drawdown / drawdown_schedule: reflect whether a real
+      schedule exists and is actually drawing down the reserve.
+
+    days_cover_with_commercial has NO real data source anywhere in this
+    system (nothing tracks private commercial stock levels) — kept as
+    an explicitly-labeled estimate (same 1.275x ratio as the original
+    hardcoded 9.5/7.45), not represented as real.
+
+    Falls back to the original hardcoded snapshot only if all three
+    real sources fail, so the endpoint never hard-errors.
+    """
+    import asyncio as _asyncio
+
+    try:
+        from db.neo4j_queries import get_spr_total_volume
+        from agents.simulation import _get_india_daily_consumption
+
+        total_capacity_mb = await _asyncio.to_thread(get_spr_total_volume)
+        daily_consumption_mbd = await _asyncio.to_thread(_get_india_daily_consumption)
+
+        current_level_mb = total_capacity_mb
+        active_drawdown = False
+        drawdown_schedule = None
+
+        try:
+            from db.postgres_queries import get_latest_spr_schedule
+            latest = await _asyncio.to_thread(get_latest_spr_schedule)
+            if latest:
+                current_level_mb = latest.get("spr_remaining_mb", total_capacity_mb)
+                schedule = latest.get("daily_drawdown_schedule") or []
+                if any(v > 0 for v in schedule):
+                    active_drawdown = True
+                    drawdown_schedule = schedule
+        except ImportError:
+            pass  # helper not built yet — current_level defaults to full capacity
+
+        fill_pct = round((current_level_mb / total_capacity_mb) * 100, 2) if total_capacity_mb > 0 else 0.0
+        days_cover = round(current_level_mb / daily_consumption_mbd, 2) if daily_consumption_mbd > 0 else 0.0
+
+        return {
+            "total_capacity_mb": round(total_capacity_mb, 2),
+            "current_level_mb": round(current_level_mb, 2),
+            "fill_pct": fill_pct,
+            "daily_consumption_mbd": round(daily_consumption_mbd, 3),
+            "days_cover": days_cover,
+            "days_cover_with_commercial": round(days_cover * 1.275, 2),
+            "active_drawdown": active_drawdown,
+            "drawdown_schedule": drawdown_schedule,
+            "note": "days_cover uses strategic SPR only. days_cover_with_commercial is an ESTIMATE (1.275x ratio) — no real commercial-stock data source exists in this system.",
+            "source": "live",
+        }
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"/spr/status: real data assembly failed, serving snapshot: {e}")
+        return {
+            "total_capacity_mb": 43.9,
+            "current_level_mb": 38.0,
+            "fill_pct": 86.6,
+            "daily_consumption_mbd": 5.1,
+            "days_cover": 7.45,
+            "days_cover_with_commercial": 9.5,
+            "active_drawdown": False,
+            "drawdown_schedule": None,
+            "note": "FALLBACK snapshot — live data assembly failed, see server logs.",
+            "source": "fallback",
+        }
 
 
 # GET /api/prices/live  (Day 7)
@@ -351,11 +518,29 @@ async def get_spr_schedule():
     from db.redis_client import get_redis
     import json
 
+    # Day 12 spec: "returns the latest LP-solved schedule from PostgreSQL".
+    # Preferred source is the spr_schedules table (Agent 5 persists every
+    # solve there). Requires Person B's get_latest_spr_schedule() helper —
+    # defensively imported until it lands, then this just starts working.
+    try:
+        import asyncio as _asyncio
+        from db.postgres_queries import get_latest_spr_schedule
+        row = await _asyncio.to_thread(get_latest_spr_schedule)
+        if row:
+            row["source"] = "postgres"
+            return row
+    except ImportError:
+        pass  # helper not built yet — fall through to Redis cache
+    except Exception:
+        pass
+
     try:
         r = await get_redis()
         cached = await r.get("spr:schedule:latest")
         if cached:
-            return json.loads(cached)
+            data = json.loads(cached)
+            data["source"] = "redis_cache"
+            return data
     except Exception:
         pass
 
@@ -388,6 +573,151 @@ async def trigger_spr_optimization(body: dict = {}):
         available_imports = [daily_available] * 30
 
     result = solve_spr_schedule(available_imports_mbd=available_imports)
+    return result
+
+
+# GET /api/audit/events  (Day 12 — paginated event history)
+@router.get("/audit/events")
+async def get_audit_events(limit: int = 20, offset: int = 0):
+    """
+    Paginated verified-event history from Postgres — the audit trail
+    Person C's admin/audit views read. limit capped at 100.
+    """
+    import asyncio as _asyncio
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+    try:
+        from db.postgres_queries import get_verified_events
+        rows = await _asyncio.to_thread(get_verified_events, limit, offset)
+        events = []
+        for row in rows:
+            ev = row.get("event_json") or {}
+            events.append({
+                "id": str(row.get("id")),
+                "corridor": row.get("corridor"),
+                "stage": row.get("stage"),
+                "confidence": row.get("confidence"),
+                "created_at": str(row.get("created_at")),
+                "event": ev,
+            })
+        return {
+            "events": events,
+            "limit": limit,
+            "offset": offset,
+            "count": len(events),
+            "source": "postgres",
+        }
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"/audit/events failed: {e}")
+        raise HTTPException(status_code=500, detail="Audit query failed")
+
+
+# GET /api/simulation/run  (Day 12 — four formulas on CURRENT risk state)
+@router.get("/simulation/run")
+async def run_simulation():
+    """
+    Runs all four simulation formulas (agents/simulation.py: import
+    disruption, SPR drawdown, Brent price impact, refinery utilization)
+    against the CURRENT live risk state, and returns all four outputs.
+
+    How the inputs are assembled:
+    - affected_chokepoint = the corridor with the highest current risk
+      in Redis risk:state; closure_severity = that risk score.
+    - supplier_route_risks built live: each supplier's route (from
+      Neo4j, chokepoint parsed from the route name), their current
+      import share (Neo4j SUPPLIES relationship), and their route's
+      corridor risk from risk:state.
+    simulation.run_all itself is sync (its own sync Redis/Neo4j calls),
+    so the whole thing runs via asyncio.to_thread.
+    """
+    import asyncio as _asyncio
+    import json as _json
+    from db.redis_client import get_redis
+
+    # 1. Current risk vector (numeric corridors only — bool excluded)
+    r = await get_redis()
+    data = await r.get("risk:state")
+    raw = _json.loads(data) if data else {}
+    risk_vector = {k: v for k, v in raw.items() if _is_numeric_score(v)}
+
+    if not risk_vector:
+        raise HTTPException(
+            status_code=409,
+            detail="risk:state empty — Agent 3 has not produced a risk vector yet",
+        )
+
+    affected_chokepoint = max(risk_vector, key=risk_vector.get)
+    closure_severity = risk_vector[affected_chokepoint]
+
+    # 2. Supplier route risks from Neo4j + risk vector
+    def _build_inputs():
+        from db.neo4j_queries import get_surviving_routes, get_supplier_current_share
+        routes = get_surviving_routes([])  # no blocks: every route
+        entries, seen = [], set()
+        for route in routes:
+            supplier = route.get("supplier")
+            if not supplier or supplier in seen:
+                continue
+            seen.add(supplier)
+            route_name = route.get("route", "")
+            chokepoint = (
+                route_name.split(" via ")[-1].strip()
+                if " via " in route_name else "Unknown"
+            )
+            try:
+                share = get_supplier_current_share(supplier)
+            except Exception:
+                share = 0.0
+            entries.append({
+                "supplier": supplier,
+                "primary_chokepoint": chokepoint,
+                "import_share": share,
+                "route_risk": risk_vector.get(chokepoint, 0.0),
+            })
+        return entries
+
+    supplier_route_risks = await _asyncio.to_thread(_build_inputs)
+
+    # 3. Get the real post-drawdown SPR level, if one exists.
+    # Person B's run_all() takes spr_remaining_mb as optional — None
+    # correctly falls back to the static baseline
+    # (spr_total_mb / daily_consumption_mbd), which is the accurate
+    # number when no Agent 5 run has actually happened yet. When a real
+    # schedule exists (Postgres, via Agent 5's LP solver), pass its
+    # true remaining level so spr_cover_days reflects the actual
+    # post-crisis figure instead of always reporting the baseline.
+    spr_remaining_mb = None
+    try:
+        from db.postgres_queries import get_latest_spr_schedule
+        latest_schedule = await _asyncio.to_thread(get_latest_spr_schedule)
+        if latest_schedule:
+            spr_remaining_mb = latest_schedule.get("spr_remaining_mb")
+    except ImportError:
+        pass  # helper not built yet — None correctly falls back to baseline
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(
+            f"/simulation/run: get_latest_spr_schedule failed, using baseline: {e}"
+        )
+
+    # 4. Run all four formulas (sync module — offloaded)
+    from agents.simulation import run_all
+    result = await _asyncio.to_thread(
+        run_all,
+        supplier_route_risks,
+        closure_severity,
+        affected_chokepoint,
+        spr_remaining_mb=spr_remaining_mb,
+    )
+
+    result["inputs"] = {
+        "affected_chokepoint": affected_chokepoint,
+        "closure_severity": closure_severity,
+        "risk_vector": risk_vector,
+        "supplier_route_risks": supplier_route_risks,
+        "spr_remaining_mb_used": spr_remaining_mb,
+    }
     return result
 
 

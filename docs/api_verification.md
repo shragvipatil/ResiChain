@@ -15,6 +15,17 @@ Verified by: Person B
 - Endpoint tested: https://api.eia.gov/v2/
 - Stored in: .env as EIA_API_KEY
 - Used for: Brent crude price, supply data
+- **Known limitation (added 9 July 2026):** India's petroleum
+  consumption series (activityId=2, productId=54) returns zero usable
+  data — all 48 available rows show `value: "--"` (EIA's placeholder
+  for unpublished data). Confirmed via direct API calls, not a parsing
+  bug on our side. Even if populated, EIA's "International" dataset is
+  structurally annual/low-frequency projection data, not a live daily
+  feed — so it couldn't fully satisfy a "live daily consumption"
+  requirement regardless. **Resolution:** `INDIA_DAILY_CONSUMPTION_MBD`
+  (5.1 mbd) is treated as a validated constant, not a live fetch, in
+  `simulation.py`, `agent5.py`, and `agent7.py` — confirmed consistent
+  across all three (Person B, Day 12). 
 
 ## Free APIs (No Key Needed)
 
