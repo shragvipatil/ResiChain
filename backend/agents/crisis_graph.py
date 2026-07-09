@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, TypedDict, Annotated
 from uuid import uuid4
 
@@ -79,6 +79,7 @@ class CrisisGraphState(TypedDict, total=False):
     # fix verified in a minimal standalone test). Optional[...] makes
     # the channel default None instead, so None survives intact.
     playbook_id: Annotated[Optional[str], _take_latest]
+    _graph_started_at: Annotated[Optional[str], _take_latest]  # placeholder for Agent 8's signal_detected_at
     risk_vector: Annotated[Optional[Dict[str, float]], _take_latest]
 
     # Agent 4 output
@@ -371,40 +372,98 @@ async def node_agent5_second_pass(state: CrisisGraphState) -> dict:
     }
 
 
-async def node_agent8_stub(state: CrisisGraphState) -> dict:
+async def node_agent8(state: CrisisGraphState) -> dict:
     """
-    TEMPORARY — nobody has built Agent 8 (Playbook Generator) yet.
-    Assembles a minimal, clearly-flagged playbook shape from whatever
-    Agent 5 and Agent 6 produced, so the graph completes end-to-end today
-    instead of erroring at the last node. Replace this entire function
-    with a real call the moment Agent 8 exists.
+    REAL Agent 8 integration (replaces the Day 9 stub).
 
-    DEFENSIVE: state arrived as None in a real run (AttributeError:
-    'NoneType' object has no attribute 'get') — root cause under
-    investigation with the None-state log below. A None state here should
-    degrade to an explicitly-flagged empty playbook, not a 500 for the
-    whole pipeline.
+    IMPORTANT — agents.agent8.run_agent8() is a SELF-CONTAINED
+    orchestrator, not a state-consuming graph node: it takes
+    (affected_chokepoints, closure_severity, signal_detected_at) and
+    internally re-runs its OWN Agent 6 and Agent 5 calls (via a
+    non-destructive risk:state injection/restore), rather than consuming
+    this graph's already-computed procurement_result / spr_schedule_final.
+    That means agent5_first / agent6 / agent5_second's outputs are NOT
+    fed into Agent 8 — they still drive the per-node WebSocket progress
+    animation (Day 9 spec), but Agent 8 recomputes everything itself for
+    the persisted playbook. Net effect: Agent 6/Agent 5 each run an extra
+    time per trigger — a few extra seconds, negligible against the
+    3-minute target.
+
+    UPDATED — Person B extended run_agent8() to take the FULL compound
+    chokepoint list (affected_chokepoints: List[str]) plus a per-
+    chokepoint severity dict, instead of one substituted corridor. This
+    replaces the earlier "pick the highest-risk corridor" stand-in,
+    which understated disrupted share for genuine compound events (the
+    Day 12 test scenario — Hormuz AND Red Sea blocked together). Now
+    passes every blocked corridor with its own real risk score.
+
+    closure_severity is built as {full_chokepoint_name: risk_score},
+    matching what run_agent8/_inject_scenario_risk_state expect when
+    given a dict (required for accurate compound math per Person B's
+    docstring — a single float applies uniformly, which would be wrong
+    here since Hormuz and Red Sea have different real risk scores).
+
+    run_agent5 sync-call note: Person B confirmed run_agent5 is
+    currently a plain `def`, so agent8.py's unawaited
+    `run_agent5({...})` call is correct as-is. Flagging that this has
+    flip-flopped sync/async at least twice this session — worth a
+    quick recheck if a future run_agent8 call ever fails with something
+    like "coroutine object has no attribute 'get'".
     """
-    if state is None:
-        logger.error(
-            "Crisis graph: node_agent8_stub received state=None — upstream "
-            "node returned a value that merged to nothing. Emitting empty "
-            "flagged playbook instead of crashing."
-        )
-        state = {}
+    from agents.agent8 import run_agent8
+    from agents.agent6 import CHOKEPOINT_SHORT_TO_FULL
 
-    playbook = {
-        "playbook_id": state.get("playbook_id"),
-        "status": "STUB — Agent 8 not yet built, this is NOT a real playbook",
-        "compound_risk": state.get("compound_risk"),
-        "blocked_chokepoints": state.get("blocked_chokepoints"),
-        "spr_schedule_first_pass": state.get("spr_schedule_first_pass"),
-        "spr_schedule_final": state.get("spr_schedule_final"),
-        "procurement_result": state.get("procurement_result"),
-        "generated_at": datetime.utcnow().isoformat(),
+    blocked_short = state.get("blocked_chokepoints") or []
+    risk_vector = state.get("risk_vector") or {}
+
+    if not blocked_short:
+        logger.error("Crisis graph: node_agent8 called with no blocked_chokepoints in state")
+        playbook = {
+            "status": "ERROR",
+            "message": "Agent 8 requires at least one blocked chokepoint; state had none.",
+            "generated_at": datetime.utcnow().isoformat(),
+        }
+        await _broadcast_node_complete("agent8", {"status": "ERROR"})
+        return {"playbook": playbook}
+
+    # Full compound list — every blocked corridor, not just one.
+    affected_full = [CHOKEPOINT_SHORT_TO_FULL.get(short, short) for short in blocked_short]
+
+    # Per-chokepoint severity dict, keyed by FULL name (matches
+    # affected_full), each corridor's OWN real risk score — not one
+    # value applied uniformly.
+    closure_severity = {
+        CHOKEPOINT_SHORT_TO_FULL.get(short, short): risk_vector.get(short, 0.0)
+        for short in blocked_short
     }
-    await _broadcast_node_complete("agent8_stub", {"status": playbook["status"]})
-    return {"playbook": playbook}
+
+    signal_detected_at = None
+    raw_started = state.get("_graph_started_at")
+    if raw_started:
+        try:
+            signal_detected_at = datetime.fromisoformat(raw_started)
+        except Exception:
+            signal_detected_at = None
+
+    try:
+        result = await run_agent8(
+            affected_chokepoints=affected_full,
+            closure_severity=closure_severity,
+            signal_detected_at=signal_detected_at,
+        )
+    except Exception as e:
+        logger.error(f"Crisis graph: run_agent8 failed: {e}")
+        result = {
+            "status": "ERROR",
+            "message": f"Agent 8 failed: {e}",
+            "generated_at": datetime.utcnow().isoformat(),
+        }
+
+    await _broadcast_node_complete("agent8", {
+        "status": result.get("status"),
+        "playbook_id": result.get("playbook_id"),
+    })
+    return {"playbook": result}
 
 
 # ---------------------------------------------------------------------------
@@ -423,7 +482,7 @@ def build_crisis_graph_definition() -> StateGraph:
     workflow.add_node("agent5_first", _timed("agent5_first", node_agent5_first_pass))
     workflow.add_node("agent6", _timed("agent6", node_agent6))
     workflow.add_node("agent5_second", _timed("agent5_second", node_agent5_second_pass))
-    workflow.add_node("agent8", _timed("agent8", node_agent8_stub))
+    workflow.add_node("agent8", _timed("agent8", node_agent8))
 
     workflow.set_entry_point("agent4")
 
@@ -472,6 +531,19 @@ async def run_crisis_graph(compiled_graph, risk_vector: dict, playbook_id: Optio
     initial_state: CrisisGraphState = {
         "playbook_id": playbook_id,  # stays None unless a REAL playbook exists
         "risk_vector": risk_vector,
+        # Placeholder for Agent 8's signal_detected_at — ideally this
+        # should be the FIRST verified event's real timestamp (Agent 1/
+        # Agent 3), needed to genuinely prove the "under 3 minutes"
+        # milestone. This graph is currently manually triggered, not yet
+        # wired to an automatic Agent-3-detects-crisis trigger, so there
+        # is no real earlier timestamp available in state. Using this
+        # graph run's own start as a stand-in until that trigger exists.
+        # timezone-AWARE (datetime.now(timezone.utc), not the naive
+        # datetime.utcnow()) — Agent 8 subtracts this from its own
+        # aware playbook_generated_at; mixing naive/aware datetimes
+        # raises "can't subtract offset-naive and offset-aware
+        # datetimes" (confirmed live).
+        "_graph_started_at": datetime.now(timezone.utc).isoformat(),
     }
     config = {"configurable": {"thread_id": thread_id}}
 
