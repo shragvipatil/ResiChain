@@ -97,42 +97,21 @@ def _get_spot_premium() -> float:
 
 def _get_india_consumption() -> float:
     """
-    Prefer live EIA; tolerate both EIAAPIKEY and EIA_API_KEY env names.
+    EIA International API's India consumption series is confirmed
+    non-functional: activityId=1/productId=53 returns Production data
+    (not Consumption), and the correct series (activityId=2, productId=54)
+    returns only uninitialized rows ('--') for India — verified via direct
+    API inspection on 2026-07-08. EIA's International dataset is also
+    structurally annual/low-frequency projection data, not a live daily
+    feed, so even a populated series would not satisfy a genuinely "live
+    daily" requirement. Using the documented constant directly.
+    See docs/api-verification.md.
     """
-    try:
-        import requests
-
-        key = os.getenv("EIAAPIKEY", os.getenv("EIA_API_KEY", ""))
-        if not key:
-            raise ValueError("EIA API key not set")
-
-        url = (
-            "https://api.eia.gov/v2/international/data/"
-            f"?api_key={key}"
-            "&facets[activityId][]=1"
-            "&facets[productId][]=53"
-            "&facets[countryRegionId][]=IND"
-            "&data[]=value"
-            "&sort[0][column]=period"
-            "&sort[0][direction]=desc"
-            "&length=1"
-        )
-        resp = requests.get(url, timeout=10)
-        resp.raise_for_status()
-        rows = resp.json().get("response", {}).get("data", [])
-        if not rows:
-            raise ValueError("No EIA consumption rows returned")
-        annual_value = float(rows[0]["value"])
-        if annual_value <= 0:
-            raise ValueError("EIA returned non-positive consumption")
-        return annual_value / 365.0
-    except Exception as exc:
-        logger.warning(
-            "EIA consumption fetch failed in Agent 5: %s — using emergency fallback %.2f",
-            exc,
-            EMERGENCY_DAILY_CONSUMPTION_MBD,
-        )
-        return EMERGENCY_DAILY_CONSUMPTION_MBD
+    logger.info(
+        "EIA India consumption series unavailable (documented limitation) — using %.2f mbd",
+        EMERGENCY_DAILY_CONSUMPTION_MBD,
+    )
+    return EMERGENCY_DAILY_CONSUMPTION_MBD
 
 
 def _persist_schedule(

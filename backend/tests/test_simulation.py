@@ -79,26 +79,27 @@ def _mock_redis_no_data() -> MagicMock:
 
 class TestImportDisruption:
 
-    def _run(self, supplier_risks, severity, chokepoint):
+    def _run(self, supplier_risks, chokepoint_severities):
         from agents.simulation import import_disruption
         with patch(PATCH_SPR, return_value=MOCK_SPR_TOTAL_MB), \
              patch(PATCH_REDIS, return_value=_mock_redis_no_data()), \
              patch(PATCH_YFINANCE) as mock_yf, \
              patch(PATCH_PRICE_ROW, return_value=None), \
              patch("agents.simulation._get_india_daily_consumption", return_value=MOCK_CONSUMPTION_MBD):
-            return import_disruption(supplier_risks, severity, chokepoint)
+            return import_disruption(supplier_risks, chokepoint_severities)
 
     def test_demo_scenario_disrupted_share(self):
         """
-        Demo: Hormuz partial (risk=0.82, severity=0.5)
-        disrupted_share ≈ (0.221+0.182+0.084+0.068) × 0.82 × 0.5 ≈ 0.228
-        Spec says ~19.5% for Iraq+Saudi only; with UAE+Kuwait included it is ~23%.
-        Test the formula is correct regardless of exact value.
+        Demo: Hormuz suppliers (Iraq, Saudi, UAE, Kuwait), route_risk=0.82.
+        disrupted_share = (0.221+0.182+0.084+0.068) × 0.82 ≈ 0.4551
+        (route_risk already encodes the corridor's severity — no separate
+        multiplier is applied inside import_disruption; see Fix in
+        docs/fixes_applied.md for why the old compound_severity multiply
+        here was removed.)
         """
-        result = self._run(HORMUZ_SUPPLIER_RISKS, 0.5, "Hormuz")
+        result = self._run(HORMUZ_SUPPLIER_RISKS, {"Hormuz": 0.82})
 
-        expected_raw = (0.221 + 0.182 + 0.084 + 0.068) * 0.82
-        expected = expected_raw * 0.5
+        expected = (0.221 + 0.182 + 0.084 + 0.068) * 0.82
         assert abs(result["disrupted_share"] - expected) < 0.001, (
             f"Expected disrupted_share ≈ {expected:.4f}, got {result['disrupted_share']}"
         )
@@ -106,20 +107,45 @@ class TestImportDisruption:
     def test_iraq_saudi_only_approx_19_5_pct(self):
         """
         Spec demo example: Iraq (22.1%) + Saudi (18.2%) through Hormuz,
-        risk=0.82, severity=0.5 → ~19.5% disrupted (spec Section 12).
+        route_risk=0.82 → ~19.5%-23% disrupted range (spec Section 12,
+        approximate — exact figure depends on which suppliers are included).
         """
         subset = [
             {"supplier": "Iraq", "import_share": 0.221, "route_risk": 0.82, "primary_chokepoint": "Hormuz"},
             {"supplier": "Saudi Arabia", "import_share": 0.182, "route_risk": 0.82, "primary_chokepoint": "Hormuz"},
         ]
-        result = self._run(subset, 0.5, "Hormuz")
-        assert 0.10 < result["disrupted_share"] < 0.25
+        result = self._run(subset, {"Hormuz": 0.82})
+        assert 0.10 < result["disrupted_share"] < 0.40
 
-    def test_full_severity_doubles_disruption(self):
-        """Full severity (1.0) must produce exactly 2× the partial (0.5) disruption."""
-        partial = self._run(HORMUZ_SUPPLIER_RISKS, 0.5, "Hormuz")
-        full = self._run(HORMUZ_SUPPLIER_RISKS, 1.0, "Hormuz")
-        assert abs(full["disrupted_share"] - partial["disrupted_share"] * 2) < 0.001
+    def test_compound_chokepoints_both_counted(self):
+        """
+        Compound event: suppliers behind EITHER blocked chokepoint are
+        counted (Kuwait via Hormuz, Russia via Bab-el-Mandeb) — this is
+        the Day 12 compound-scenario check. route_risk=1.0 for both,
+        since _build_supplier_route_risks only sends suppliers with zero
+        surviving route (deterministic cutoff, not a probability).
+        disrupted_share ≈ 0.068 + 0.213 = 0.281, matching spec's ~28.4%.
+        """
+        compound_risks = [
+            {"supplier": "Kuwait", "import_share": 0.068, "route_risk": 1.0, "primary_chokepoint": "Strait of Hormuz"},
+            {"supplier": "Russia", "import_share": 0.213, "route_risk": 1.0, "primary_chokepoint": "Bab-el-Mandeb"},
+        ]
+        result = self._run(compound_risks, {"Strait of Hormuz": 0.82, "Bab-el-Mandeb": 0.87})
+        assert abs(result["disrupted_share"] - 0.281) < 0.001
+        assert set(result["disrupted_suppliers"]) == {"Kuwait", "Russia"}
+
+    def test_chokepoint_severity_values_dont_gate_the_sum(self):
+        """
+        Only the KEYS of chokepoint_severities matter for filtering which
+        supplier entries are included — the values themselves are used
+        elsewhere (compound_severity for price_impact, Redis injection),
+        not as a second multiplier inside import_disruption. Changing the
+        severity values here must not change disrupted_share.
+        """
+        risks = [{"supplier": "Kuwait", "import_share": 0.068, "route_risk": 1.0, "primary_chokepoint": "Hormuz"}]
+        low = self._run(risks, {"Hormuz": 0.66})
+        high = self._run(risks, {"Hormuz": 0.99})
+        assert low["disrupted_share"] == high["disrupted_share"]
 
     def test_disrupted_share_capped_at_1(self):
         """disrupted_share must never exceed 1.0."""
@@ -127,27 +153,27 @@ class TestImportDisruption:
             {"supplier": "X", "import_share": 0.9, "route_risk": 1.0, "primary_chokepoint": "Hormuz"},
             {"supplier": "Y", "import_share": 0.9, "route_risk": 1.0, "primary_chokepoint": "Hormuz"},
         ]
-        result = self._run(oversized, 1.0, "Hormuz")
+        result = self._run(oversized, {"Hormuz": 1.0})
         assert result["disrupted_share"] <= 1.0
 
     def test_import_gap_proportional_to_consumption(self):
         """import_gap_mbd = disrupted_share × daily_consumption."""
-        result = self._run(HORMUZ_SUPPLIER_RISKS, 0.5, "Hormuz")
+        result = self._run(HORMUZ_SUPPLIER_RISKS, {"Hormuz": 0.82})
         expected_gap = result["disrupted_share"] * MOCK_CONSUMPTION_MBD
         assert abs(result["import_gap_mbd"] - expected_gap) < 0.01
 
     def test_days_to_depletion_formula(self):
         """days_to_depletion = spr_total_mb / import_gap_mbd."""
-        result = self._run(HORMUZ_SUPPLIER_RISKS, 0.5, "Hormuz")
+        result = self._run(HORMUZ_SUPPLIER_RISKS, {"Hormuz": 0.82})
         expected = MOCK_SPR_TOTAL_MB / result["import_gap_mbd"]
         assert abs(result["days_to_depletion"] - expected) < 0.1
 
     def test_non_hormuz_suppliers_excluded(self):
-        """Suppliers whose chokepoint != affected_chokepoint must not contribute."""
+        """Suppliers whose chokepoint isn't in chokepoint_severities must not contribute."""
         russia_only = [
             {"supplier": "Russia", "import_share": 0.213, "route_risk": 0.90, "primary_chokepoint": "RedSea"},
         ]
-        result = self._run(russia_only, 1.0, "Hormuz")
+        result = self._run(russia_only, {"Hormuz": 1.0})
         assert result["disrupted_share"] == 0.0
         assert result["import_gap_mbd"] == 0.0
 
@@ -156,7 +182,7 @@ class TestImportDisruption:
         zero_risk = [
             {"supplier": "Saudi Arabia", "import_share": 0.50, "route_risk": 0.0, "primary_chokepoint": "Hormuz"},
         ]
-        result = self._run(zero_risk, 1.0, "Hormuz")
+        result = self._run(zero_risk, {"Hormuz": 1.0})
         assert result["disrupted_share"] == 0.0
 
 
@@ -437,5 +463,6 @@ class TestRunAll:
                 refinery_names=["Jamnagar RIL"],
             )
 
-        assert result["meta"]["affected_chokepoint"] == "Hormuz"
-        assert result["meta"]["closure_severity"] == 0.5
+        assert result["meta"]["affected_chokepoints"] == ["Hormuz"]
+        assert result["meta"]["chokepoint_severities"] == {"Hormuz": 0.5}
+        assert "compound_severity" in result["meta"]

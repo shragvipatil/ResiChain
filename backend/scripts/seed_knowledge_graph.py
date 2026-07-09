@@ -243,6 +243,15 @@ def seed_relationships(tx):
         "MATCH (r:Route {name:'Iraq to Paradip via Hormuz'}), (c:Chokepoint {name:'Strait of Hormuz'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
         "MATCH (r:Route {name:'Kuwait to Vizag via Hormuz'}), (c:Chokepoint {name:'Strait of Hormuz'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
         "MATCH (r:Route {name:'Russia to Vadinar via Suez'}), (c:Chokepoint {name:'Suez Canal'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
+        # Fix (Person B, Day 12 compound-scenario verification): a ship sailing
+        # from Russia to Suez Canal must also transit Bab-el-Mandeb/Red Sea to
+        # reach it from the Arabian Sea side. Without this edge, a Red Sea
+        # disruption never blocks this route, and get_surviving_routes()
+        # incorrectly shows the Suez route as "surviving" during a Hormuz +
+        # Red Sea compound event, when only the Cape route should survive.
+        # Previously patched as a one-off script (fix_suez_babelmandeb_link.py)
+        # against the live DB only — moved here so it survives a fresh reseed.
+        "MATCH (r:Route {name:'Russia to Vadinar via Suez'}), (c:Chokepoint {name:'Bab-el-Mandeb'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
         "MATCH (r:Route {name:'Saudi to Kochi via Cape'}), (c:Chokepoint {name:'Cape of Good Hope'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
         "MATCH (r:Route {name:'UAE to Paradip via Cape'}), (c:Chokepoint {name:'Cape of Good Hope'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
         "MATCH (r:Route {name:'Iraq to Paradip via Cape'}), (c:Chokepoint {name:'Cape of Good Hope'}) MERGE (r)-[:PASSES_THROUGH]->(c)",

@@ -249,3 +249,13 @@ def get_supplier_route_chokepoints() -> Dict[str, List[str]]:
     """
     rows = _run_query(query)
     return {row["supplier"]: row["chokepoints"] for row in rows}
+
+def get_refinery_disrupted_share(disrupted_suppliers: List[str]) -> Dict[str, Dict[str, Any]]:
+    query = """
+    MATCH (s:Supplier)-[:PRODUCES]->(g:CrudeGrade)-[:COMPATIBLE_WITH]->(r:Refinery)
+    WHERE s.name IN $disrupted_suppliers
+    WITH r, count(DISTINCT g) AS compatible_grade_count, collect(DISTINCT s.name) AS suppliers
+    RETURN r.name AS refinery_name, compatible_grade_count, suppliers
+    """
+    rows = _run_query(query, {"disrupted_suppliers": disrupted_suppliers})
+    return {row["refinery_name"]: row for row in rows}
