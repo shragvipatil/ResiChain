@@ -108,10 +108,10 @@ def seed_ports(tx):
 
 def seed_refineries(tx):
     refineries = [
-        {"name": "Jamnagar RIL", "owner": "Reliance", "capacity_mbd": 1.24, "location": "Jamnagar", "compatible_share": 0.90},
-        {"name": "Vadinar Nayara", "owner": "Nayara", "capacity_mbd": 0.405, "location": "Vadinar", "compatible_share": 0.85},
-        {"name": "Kochi BPCL", "owner": "BPCL", "capacity_mbd": 0.31, "location": "Kochi", "compatible_share": 0.65},
-        {"name": "Paradip IOCL", "owner": "IOCL", "capacity_mbd": 0.30, "location": "Paradip", "compatible_share": 0.80},
+        {"name": "Jamnagar RIL", "owner": "Reliance", "capacity_mbd": 1.24, "location": "Jamnagar", "compatible_share": 0.45},
+        {"name": "Vadinar Nayara", "owner": "Nayara", "capacity_mbd": 0.405, "location": "Vadinar", "compatible_share": 0.42},
+        {"name": "Kochi BPCL", "owner": "BPCL", "capacity_mbd": 0.31, "location": "Kochi", "compatible_share": 0.32},
+        {"name": "Paradip IOCL", "owner": "IOCL", "capacity_mbd": 0.30, "location": "Paradip", "compatible_share": 0.40},
     ]
     for r in refineries:
         tx.run("""
@@ -121,7 +121,6 @@ def seed_refineries(tx):
                 n.location = $location,
                 n.compatible_share = $compatible_share
         """, r)
-
 
 def seed_other_refineries(tx):
     tx.run("""
