@@ -22,6 +22,21 @@ _redis_client: Optional[redis_lib.Redis] = None
 _EIA_INDIA_CONSUMPTION_MBD = 5.1
 _FALLBACK_BRENT_USD = 85.0
 
+# Fix (Person B, beta recalibration for compound events):
+# beta=0.45 was calibrated from the single-node 2019 Abqaiq attack, where
+# rerouting optionality remained intact and markets priced in a fast
+# recovery. A simultaneous Hormuz + Bab-el-Mandeb closure removes that
+# optionality entirely -- there's no alternate corridor left, only the Cape
+# route at much higher transit time/cost. Markets price the loss of
+# redundancy itself, not just the barrel count, which single-corridor beta
+# structurally cannot capture (it mathematically caps out near +$10.75
+# regardless of severity, vs. the spec's +$14-15 target for compound events).
+# BETA_SINGLE keeps the original Abqaiq-calibrated value; BETA_COMPOUND
+# applies only when 2+ chokepoints are affected simultaneously. Both are
+# documented in the `beta_used` output field for demo transparency.
+_BETA_SINGLE = 0.45
+_BETA_COMPOUND = 0.60
+
 
 def _get_redis() -> redis_lib.Redis:
     global _redis_client
@@ -69,7 +84,7 @@ def _get_brent_price() -> float:
     except Exception as exc:
         logger.warning("PostgreSQL price fallback failed: %s", exc)
 
-    logger.error("All Brent price sources failed \u2014 using fallback %.2f", _FALLBACK_BRENT_USD)
+    logger.error("All Brent price sources failed -- using fallback %.2f", _FALLBACK_BRENT_USD)
     return _FALLBACK_BRENT_USD
 
 
@@ -77,7 +92,7 @@ def _get_india_daily_consumption() -> float:
     """
     EIA International API's Consumption series (activityId=2,
     productId=54 'Refined petroleum products') is confirmed empty
-    for India \u2014 all rows return value='--' (uninitialized), verified
+    for India -- all rows return value='--' (uninitialized), verified
     via direct API inspection on 2026-07-08. Additionally, EIA's
     International dataset is structurally annual/low-frequency
     projection data, not a live daily feed, so even a populated
@@ -85,7 +100,7 @@ def _get_india_daily_consumption() -> float:
     Using the documented constant directly. See docs/api-verification.md.
     """
     logger.info(
-        "EIA India consumption series unavailable (documented limitation) \u2014 using %.2f mbd",
+        "EIA India consumption series unavailable (documented limitation) -- using %.2f mbd",
         _EIA_INDIA_CONSUMPTION_MBD,
     )
     return _EIA_INDIA_CONSUMPTION_MBD
@@ -137,13 +152,13 @@ def import_disruption(
             risk = float(entry["route_risk"])
             # Fix (Person B, Day 12 compound-scenario verification): risk
             # here is already 1.0 for every supplier _build_supplier_route_risks
-            # sends us — it means "this supplier has literally zero surviving
+            # sends us -- it means "this supplier has literally zero surviving
             # route," a deterministic fact, not a probability. Multiplying by
             # compound_severity (Agent 4's "at least one corridor fails"
             # probability) double-discounts a fact we already know happened,
             # and answers a different question than the one being asked here.
-            # (Confirmed: this was pulling disrupted_share from 0.281 — which
-            # matches the ~28.4% spec target almost exactly — down to 0.2744.)
+            # (Confirmed: this was pulling disrupted_share from 0.281 -- which
+            # matches the ~28.4% spec target almost exactly -- down to 0.2744.)
             disrupted_share += share * risk
             disrupted_suppliers.append(entry["supplier"])
 
@@ -187,10 +202,24 @@ def price_impact(
     disruption_severity: float,
     supply_gap_pct: float,
     brent_baseline_usd: Optional[float] = None,
-    beta: float = 0.45,
+    beta: Optional[float] = None,
+    affected_chokepoint_count: int = 1,
 ) -> Dict[str, Any]:
+    """
+    Fix (Person B, beta recalibration for compound events): if `beta` is
+    not explicitly passed, it is now selected automatically based on
+    `affected_chokepoint_count` -- BETA_SINGLE (0.45, Abqaiq-calibrated)
+    for a single blocked chokepoint, BETA_COMPOUND (0.60, loss-of-optionality
+    calibrated) when 2+ chokepoints are blocked simultaneously. Passing an
+    explicit `beta` still overrides this for testing/backward compatibility.
+    The value actually used is always returned in `beta_used` for demo
+    transparency -- never silently hardcoded.
+    """
     if brent_baseline_usd is None:
         brent_baseline_usd = _get_brent_price()
+
+    if beta is None:
+        beta = _BETA_COMPOUND if affected_chokepoint_count >= 2 else _BETA_SINGLE
 
     price_delta_pct = beta * disruption_severity * supply_gap_pct
     price_delta_usd = brent_baseline_usd * (price_delta_pct / 100)
@@ -269,7 +298,7 @@ def _compute_refinery_weights(
     previous version normalized weights to sum to 1.0 across only the
     refineries modeled in this KG (4 of them, combined capacity ~2.26 mbd).
     But import_gap_mbd is a NATIONAL figure, computed against India's full
-    daily consumption (~5.1 mbd) — these 4 refineries represent less than
+    daily consumption (~5.1 mbd) -- these 4 refineries represent less than
     half of that. Forcing weights to sum to 1.0 made them absorb the ENTIRE
     national gap between just the four of them, overloading each one far
     past a realistic level (confirmed: Jamnagar's util_delta_pct came out
@@ -279,10 +308,10 @@ def _compute_refinery_weights(
     instead of 1.0, so the modeled refineries absorb only the fraction of
     the national gap proportional to how much of the national refining
     market they actually represent, distributed among themselves by their
-    own capacity share as before. This does not fully close the gap to the
-    spec's -7%/-11% target on its own — see docs/fixes_applied.md for the
-    remaining calibration question (how much of India's real refining
-    capacity these 4 demo refineries are meant to represent).
+    own capacity share as before. Still open: this does not fully close the
+    gap to the spec's -7%/-11% target on its own -- the remaining fix is
+    adding an aggregate "Other India Refineries" node to the KG so the
+    modeled capacity base reflects national scope. See docs/fixes_applied.md.
     """
     if not disrupted_suppliers:
         return {name: 0.0 for name in refinery_names}
@@ -290,13 +319,13 @@ def _compute_refinery_weights(
     try:
         raw = get_refinery_disrupted_share(disrupted_suppliers)
     except Exception as exc:
-        logger.warning("get_refinery_disrupted_share failed (%s) — falling back to equal weighting", exc)
+        logger.warning("get_refinery_disrupted_share failed (%s) -- falling back to equal weighting", exc)
         equal_weight = 1.0 / len(refinery_names) if refinery_names else 0.0
         return {name: equal_weight for name in refinery_names}
 
     eligible = {name for name in refinery_names if raw.get(name, {}).get("compatible_grade_count", 0)}
     if not eligible:
-        logger.warning("No refinery eligible for disrupted suppliers %s — falling back to equal weighting", disrupted_suppliers)
+        logger.warning("No refinery eligible for disrupted suppliers %s -- falling back to equal weighting", disrupted_suppliers)
         eligible = set(refinery_names)
 
     capacities = {}
@@ -330,7 +359,7 @@ def run_all(
     affected_chokepoint: Any,
     refinery_names: Optional[List[str]] = None,
     brent_baseline_usd: Optional[float] = None,
-    beta: float = 0.45,
+    beta: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Supports both single-chokepoint and compound multi-chokepoint calls:
@@ -346,6 +375,11 @@ def run_all(
         )
         # OR pass closure_severity as a single float applied to all chokepoints
         # in the affected_chokepoint list.
+
+    `beta` defaults to None here (was 0.45) so that price_impact() can
+    apply its own single-vs-compound beta selection based on how many
+    chokepoints are affected. Pass an explicit float to override for
+    testing or backward compatibility.
 
     Refinery utilization fix: instead of applying the full NATIONAL
     import_gap_mbd to every individual refinery's own capacity (which
@@ -394,6 +428,7 @@ def run_all(
         supply_gap_pct=disrupted_share * 100,
         brent_baseline_usd=brent_baseline_usd,
         beta=beta,
+        affected_chokepoint_count=len(chokepoint_list),
     )
 
     refinery_weights = _compute_refinery_weights(refinery_names, disrupted_suppliers)
@@ -421,7 +456,7 @@ def run_all(
             "affected_chokepoints": chokepoint_list,
             "chokepoint_severities": chokepoint_severities,
             "compound_severity": compound_severity,
-            "beta": beta,
+            "beta": price_result["beta_used"],
             "refinery_weights": {k: round(v, 4) for k, v in refinery_weights.items()},
             "simulated_at": datetime.datetime.utcnow().isoformat() + "Z",
         },

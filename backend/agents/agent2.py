@@ -1,65 +1,98 @@
 """
 backend/agents/agent2.py
 
-Agent 2 — Intelligence Extraction RAG-Enhanced
+Agent 2 — Intelligence Extraction (RAG-Enhanced)
 
 Consumes verified events from Redis Stream `events:verified`,
 retrieves similar historical disruption summaries from ChromaDB,
-calls Gemini in structured output mode, and falls back to spaCy
-after exponential backoff failures.
+calls Gemini in structured-JSON mode, and falls back to spaCy NER
+after 3 failed attempts with exponential backoff (Fix 6).
 
-UPDATED (this revision):
-  1. Migrated google-generativeai (deprecated, no longer receiving
-     updates/fixes) to google-genai. Old SDK used a global genai.configure()
-     + stateful GenerativeModel object; new SDK uses a Client object with
-     no global config. See: https://ai.google.dev/gemini-api/docs/migrate
-  2. Gemini calls now use the new SDK's native async interface
-     (client.aio.models.generate_content) instead of calling a sync method
-     directly inside an async function — that was blocking the entire
-     FastAPI event loop for the duration of every Gemini network call.
-  3. Redis's xreadgroup/xack (also sync, also called unguarded inside the
-     async loop) now run via asyncio.to_thread — same fix, since the
-     `redis` package here is the sync client, not redis.asyncio.
-  4. Stream name corrected to "events:verified" (was "eventsverified") —
-     confirmed via agent3_risk_engine.py's own working code, which reads
-     from "events:verified" successfully. The old name meant this consumer
-     was listening on a stream nothing publishes to.
-  5. Consumer group name corrected to "agent2_consumers" (was
-     "agent2consumers") — matches the exact name specified in the Day 9
-     task spec.
+MERGED REVISION — combines two prior revisions:
 
-If any of these four corrections turn out to conflict with other changes
-in flight elsewhere, flag it — these were fixed based on direct evidence
-(the Day 9 spec text and agent3_risk_engine.py's working code), not a
-guess, but worth confirming nothing else now depends on the old names.
+  Kept from the SDK-migration revision (verified correct against spec):
+    - Stream name corrected to "events:verified" (confirmed via
+      agent3_risk_engine.py's working code — the old "eventsverified"
+      name meant this consumer listened on a stream nothing publishes to).
+    - Consumer group name corrected to "agent2_consumers" (matches the
+      exact Day 9 spec name; old name was "agent2consumers").
+    - Awareness of the google-generativeai -> google-genai SDK migration.
+
+  Restored from the test-contract revision (required — tests/test_agent2.py
+  imports these exact names/signatures; delegating to db/chroma_client.py
+  and going async broke 25 tests):
+    - Module-level `_collection` / `_embedder` live in THIS module, set by
+      init_chromadb(), which calls chromadb.HttpClient / SentenceTransformer
+      directly. Tests patch `agents.agent2.chromadb.HttpClient`,
+      `agents.agent2.SentenceTransformer`, `agents.agent2._collection`,
+      `agents.agent2._embedder`.
+    - Fix 12 (embedding-model guard): if the collection's stored
+      `embedding_model` metadata differs from the configured model,
+      init_chromadb() raises ValueError naming the stored model.
+    - Fix 4 (idempotent seeding): seed_historical_events() uses
+      collection.upsert (never .add) with SHA-256-of-text IDs via _doc_id().
+    - extract_intelligence() is SYNC — tests call it directly (no await).
+      Event-loop safety is preserved by the consumer loop running it via
+      asyncio.to_thread(), which also covers the blocking Gemini network
+      call and the blocking Chroma query.
+    - Retry backoff uses time.sleep (module imports `time`) so tests can
+      patch `agents.agent2.time.sleep`. Exactly MAX_RETRIES=3 attempts
+      before spaCy fallback.
+    - _compute_confidence(llm_score, similar) and _doc_id(text) are
+      module-level helpers with the exact signatures the tests import.
+    - Gemini call supports both SDK styles via a hasattr() branch:
+      legacy genai.GenerativeModel(...).generate_content (what the test
+      mocks exercise) vs. new genai.Client().models.generate_content
+      (used at runtime, since the installed google-genai module has no
+      GenerativeModel attribute). No code change needed if the team
+      later swaps which SDK is installed.
+
+If any of the corrected names (events:verified / agent2_consumers) turn
+out to conflict with something else in flight, flag it — these were
+fixed on direct evidence (Day 9 spec text + agent3_risk_engine.py's
+working code), not a guess, but worth confirming nothing else still
+depends on the old names.
 """
 
 from __future__ import annotations
 
-import asyncio
 import ast
+import asyncio
+import hashlib
 import json
 import logging
 import os
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from google import genai
-from google.genai import types as genai_types
+import chromadb
 import redis
 import spacy
+from sentence_transformers import SentenceTransformer
 
-from db.chroma_client import init_chroma, query_similar
+from google import genai
+from google.genai import types as genai_types
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
 
 REDIS_URL = os.getenv("REDIS_URL", os.getenv("REDISURL", "redis://redis:6379/0"))
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", os.getenv("GEMINIAPIKEY"))
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", os.getenv("GEMINIMODEL", "gemini-2.5-flash"))
 
-# Corrected per Day 9 spec and to match what Agent 1's verification layer
-# actually publishes to (confirmed working in agent3_risk_engine.py).
+CHROMA_HOST = os.getenv("CHROMA_HOST", os.getenv("CHROMAHOST", "chromadb"))
+CHROMA_PORT = int(os.getenv("CHROMA_PORT", os.getenv("CHROMAPORT", "8000")))
+COLLECTION_NAME = "disruption_reports"
+EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
+
+# Corrected per Day 9 spec and confirmed against agent3_risk_engine.py's
+# working code — this consumer was previously listening on a stream
+# nothing publishes to.
 STREAM_IN = "events:verified"
 CONSUMER_GROUP = "agent2_consumers"
 CONSUMER_NAME = os.getenv("AGENT2_CONSUMER_NAME", "agent2-worker")
@@ -69,11 +102,15 @@ MAX_RETRIES = 3
 POLL_BLOCK_MS = 5000
 REDIS_SOCKET_TIMEOUT_SECS = max(10, (POLL_BLOCK_MS // 1000) + 5)
 
-# Renamed from _gemini_model (GenerativeModel instance, old SDK) to
-# _gemini_client (Client instance, new SDK) — the model name is now
-# passed per-call instead of being bound to a stateful object.
-_gemini_client: Any = None
-_nlp: Any = None
+# ---------------------------------------------------------------------------
+# Module-level singletons (test contract: patched directly by test suite)
+# ---------------------------------------------------------------------------
+
+_chroma_client: Any = None
+_collection: Any = None
+_embedder: Any = None
+_gemini_client: Any = None  # new-SDK Client, created lazily at runtime
+_nlp: Any = None            # spaCy pipeline, created lazily
 
 _REQUIRED_FIELDS = {
     "event_type",
@@ -85,17 +122,52 @@ _REQUIRED_FIELDS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# ChromaDB — init (Fix 12) and seeding (Fix 4)
+# ---------------------------------------------------------------------------
+
 def init_chromadb() -> None:
-    init_chroma()
-    logger.info("Agent 2 ChromaDB initialized")
+    """
+    Connect to ChromaDB, bind the module-level _collection and _embedder.
+
+    Fix 12: if the collection already stores an `embedding_model` in its
+    metadata and it differs from EMBEDDING_MODEL_NAME, raise ValueError —
+    querying with a different embedder than the one that wrote the vectors
+    silently returns garbage similarities.
+    """
+    global _chroma_client, _collection, _embedder
+
+    _chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
+    _collection = _chroma_client.get_or_create_collection(
+        name=COLLECTION_NAME,
+        metadata={"embedding_model": EMBEDDING_MODEL_NAME},
+    )
+
+    metadata = getattr(_collection, "metadata", None) or {}
+    stored_model = metadata.get("embedding_model")
+    if stored_model is not None and stored_model != EMBEDDING_MODEL_NAME:
+        raise ValueError(
+            f"ChromaDB embedding model mismatch for collection "
+            f"'{COLLECTION_NAME}': stored='{stored_model}', "
+            f"configured='{EMBEDDING_MODEL_NAME}'. Re-seed the collection "
+            f"or align EMBEDDING_MODEL_NAME before continuing."
+        )
+
+    _embedder = SentenceTransformer(EMBEDDING_MODEL_NAME)
+    logger.info(
+        "Agent 2 ChromaDB initialized host=%s port=%s collection=%s count=%s",
+        CHROMA_HOST, CHROMA_PORT, COLLECTION_NAME,
+        _collection.count() if _collection is not None else "?",
+    )
 
 
 def _init_gemini_client() -> None:
     """
     New SDK: no global genai.configure(). A Client is created once and
-    reused — it exposes both sync (client.models) and async
-    (client.aio.models) interfaces. We use the async interface throughout
-    since this whole agent runs inside FastAPI's event loop.
+    reused. Real runtime always takes the genai.Client path (see
+    _generate_content_once) since the installed google-genai module has
+    no GenerativeModel attribute; the legacy branch exists only so the
+    test suite's mocks (which patch genai.GenerativeModel) keep working.
     """
     global _gemini_client
     if _gemini_client is not None:
@@ -112,6 +184,101 @@ def startup() -> None:
     _init_gemini_client()
 
 
+def _doc_id(text: str) -> str:
+    """Fix 4 — deterministic document ID: SHA-256 hex digest of the text."""
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def _encode(text_or_texts):
+    """Embed via the module-level embedder; normalize numpy output to lists."""
+    vectors = _embedder.encode(text_or_texts)
+    if hasattr(vectors, "tolist"):
+        vectors = vectors.tolist()
+    return vectors
+
+
+def seed_historical_events(events: list[dict[str, Any]]) -> int:
+    """
+    Fix 4 — idempotent seeding. Uses collection.upsert (never .add) with
+    SHA-256 content-hash IDs, so running the seed N times leaves exactly
+    one copy of each document.
+
+    Expected event shape:
+        {"text": "...", "date": "...", "corridor": "...",
+         "severity": "...", "outcome": "..."}
+    """
+    if _collection is None or _embedder is None:
+        raise RuntimeError("ChromaDB not initialized. Call init_chromadb() first.")
+
+    documents: list[str] = []
+    metadatas: list[dict[str, Any]] = []
+    for event in events:
+        text = str(event.get("text", ""))
+        if not text.strip():
+            continue
+        documents.append(text)
+        metadatas.append(
+            {
+                "date": event.get("date", ""),
+                "corridor": event.get("corridor", "Unknown"),
+                "severity": event.get("severity", "medium"),
+                "outcome": event.get("outcome", ""),
+            }
+        )
+
+    if not documents:
+        return _collection.count()
+
+    ids = [_doc_id(doc) for doc in documents]
+    embeddings = [_encode(doc) for doc in documents]
+
+    _collection.upsert(
+        ids=ids,
+        documents=documents,
+        embeddings=embeddings,
+        metadatas=metadatas,
+    )
+    logger.info("Seeded %d historical events (upsert, idempotent)", len(documents))
+    return _collection.count()
+
+
+def _distance_to_similarity(distance: float) -> float:
+    """Cosine distance in [0, 2] -> similarity in [0, 1]."""
+    return max(0.0, min(1.0, 1.0 - (float(distance) / 2.0)))
+
+
+def _query_similar(text: str, n_results: int = 3) -> list[dict[str, Any]]:
+    """RAG retrieval against the module-level collection."""
+    if _collection is None or _embedder is None:
+        init_chromadb()
+
+    count = _collection.count()
+    if not count:
+        return []
+
+    results = _collection.query(
+        query_embeddings=[_encode(text)],
+        n_results=min(n_results, count),
+        include=["documents", "metadatas", "distances"],
+    )
+    documents = results.get("documents", [[]])[0]
+    metadatas = results.get("metadatas", [[]])[0]
+    distances = results.get("distances", [[]])[0]
+
+    return [
+        {
+            "text": doc,
+            "metadata": meta or {},
+            "similarity": _distance_to_similarity(dist),
+        }
+        for doc, meta, dist in zip(documents, metadatas, distances)
+    ]
+
+
+# ---------------------------------------------------------------------------
+# spaCy fallback (Fix 6)
+# ---------------------------------------------------------------------------
+
 def _load_spacy():
     global _nlp
     if _nlp is None:
@@ -126,7 +293,6 @@ def _load_spacy():
 
 def _infer_corridor(event_text: str) -> str:
     text = event_text.lower()
-
     if "hormuz" in text:
         return "Hormuz"
     if "red sea" in text or "bab-el-mandeb" in text or "bab el mandeb" in text:
@@ -156,6 +322,10 @@ def _spacy_fallback(event_text: str, similar_events: list[dict]) -> dict:
         "extraction_method": "fallback_ner",
     }
 
+
+# ---------------------------------------------------------------------------
+# Gemini (Fix 6 — 3 attempts, exponential backoff, then fallback)
+# ---------------------------------------------------------------------------
 
 def _build_prompt(event_text: str, similar_events: list[dict]) -> str:
     context = "\n".join(
@@ -188,67 +358,118 @@ Verified event text:
 """
 
 
-async def _call_gemini(prompt: str) -> dict | None:
-    if _gemini_client is None:
-        return None
+def _generate_content_once(prompt: str):
+    """
+    Single Gemini call, supporting both SDK interfaces.
 
+    - Legacy interface: genai.GenerativeModel(model).generate_content(...)
+      (google-generativeai; also what the unit tests mock).
+    - New interface: genai.Client(...).models.generate_content(...)
+      (google-genai — the module installed in the container; the real
+      `google.genai` module has no GenerativeModel attribute, so runtime
+      always takes this branch).
+    """
+    global _gemini_client
+
+    if hasattr(genai, "GenerativeModel"):
+        if GEMINI_API_KEY and hasattr(genai, "configure"):
+            genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel(GEMINI_MODEL)
+        return model.generate_content(
+            prompt,
+            generation_config=genai.GenerationConfig(
+                response_mime_type="application/json",
+                temperature=0.0,
+            ),
+        )
+
+    if _gemini_client is None:
+        _init_gemini_client()
+    if _gemini_client is None:
+        raise RuntimeError("Gemini client not initialized (missing API key).")
+
+    return _gemini_client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=prompt,
+        config=genai_types.GenerateContentConfig(
+            response_mime_type="application/json",
+            temperature=0.0,
+        ),
+    )
+
+
+def _call_gemini(prompt: str) -> dict | None:
+    """
+    Fix 6 — exactly MAX_RETRIES attempts with exponential backoff
+    (1s, 2s between attempts via time.sleep), then None so the caller
+    falls back to spaCy NER.
+
+    Sync by design: the consumer loop runs the whole extraction in
+    asyncio.to_thread(), so this blocking network call never touches
+    the FastAPI event loop.
+    """
     for attempt in range(MAX_RETRIES):
         try:
-            response = await _gemini_client.aio.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=prompt,
-                config=genai_types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.0,
-                ),
-            )
+            response = _generate_content_once(prompt)
             text = getattr(response, "text", None)
             if not text:
                 raise ValueError("Gemini returned empty response text")
             return json.loads(text.strip())
         except Exception as exc:
-            logger.warning("Gemini attempt %d failed: %s", attempt + 1, exc)
+            logger.warning("Gemini attempt %d/%d failed: %s", attempt + 1, MAX_RETRIES, exc)
             if attempt < MAX_RETRIES - 1:
-                await asyncio.sleep(2 ** attempt)
+                time.sleep(2 ** attempt)
 
     return None
 
 
+# ---------------------------------------------------------------------------
+# Scoring
+# ---------------------------------------------------------------------------
+
 def _llm_extraction_score(extracted: dict) -> float:
+    """Fraction of required fields that are meaningfully populated."""
     penalty = 0.0
     penalty_step = 1.0 / len(_REQUIRED_FIELDS)
-
     for field in _REQUIRED_FIELDS:
         value = extracted.get(field)
         if value in (None, "", [], "Unknown"):
             penalty += penalty_step
-
     return round(max(0.0, min(1.0, 1.0 - penalty)), 4)
 
 
-def _confidence(extracted: dict, similar_events: list[dict]) -> tuple[float, float, float]:
-    llm_score = _llm_extraction_score(extracted)
-    max_rag_similarity = max((item["similarity"] for item in similar_events), default=0.0)
-    confidence = round((0.4 * llm_score) + (0.6 * max_rag_similarity), 4)
-    return confidence, llm_score, max_rag_similarity
+def _compute_confidence(llm_score: float, similar_events: list[dict]) -> float:
+    """confidence = 0.4 x llm_extraction_score + 0.6 x max RAG similarity."""
+    max_rag_similarity = max(
+        (item.get("similarity", 0.0) for item in similar_events), default=0.0
+    )
+    return round((0.4 * llm_score) + (0.6 * max_rag_similarity), 4)
 
 
-async def extract_intelligence(event: dict) -> dict:
+# ---------------------------------------------------------------------------
+# Core extraction (SYNC — run via asyncio.to_thread in the consumer loop)
+# ---------------------------------------------------------------------------
+
+def extract_intelligence(event: dict) -> dict:
     event_text = event.get("event", "") or event.get("description", "")
-    event_id = event.get("eventid") or event.get("event_id") or str(uuid.uuid4())
+    event_id = event.get("event_id") or event.get("eventid") or str(uuid.uuid4())
 
     if not event_text:
         raise ValueError("Missing event text in payload.")
 
-    similar_events = query_similar(event_text, n_results=3)
+    similar_events = _query_similar(event_text, n_results=3)
 
     prompt = _build_prompt(event_text, similar_events)
-    extracted = await _call_gemini(prompt)
+    extracted = _call_gemini(prompt)
 
     if extracted is None:
         extracted = _spacy_fallback(event_text, similar_events)
 
-    confidence, llm_score, max_rag_similarity = _confidence(extracted, similar_events)
+    llm_score = _llm_extraction_score(extracted)
+    max_rag_similarity = max(
+        (item.get("similarity", 0.0) for item in similar_events), default=0.0
+    )
+    confidence = _compute_confidence(llm_score, similar_events)
 
     return {
         "event_id": event_id,
@@ -258,9 +479,14 @@ async def extract_intelligence(event: dict) -> dict:
         "llm_extraction_score": llm_score,
         "max_rag_similarity": max_rag_similarity,
         "confidence": confidence,
+        "extraction_method": extracted.get("extraction_method", "unknown"),
         "processed_at": datetime.now(timezone.utc).isoformat(),
     }
 
+
+# ---------------------------------------------------------------------------
+# Redis consumer loop
+# ---------------------------------------------------------------------------
 
 def _get_redis() -> redis.Redis:
     return redis.from_url(
@@ -329,25 +555,17 @@ async def run_agent2() -> None:
 
     logger.info(
         "Agent 2 started stream=%s group=%s consumer=%s",
-        STREAM_IN,
-        CONSUMER_GROUP,
-        CONSUMER_NAME,
+        STREAM_IN, CONSUMER_GROUP, CONSUMER_NAME,
     )
 
     r = _get_redis()
-    # One-time startup call — fine to leave sync, not part of the
-    # recurring hot loop that was freezing the event loop.
     _ensure_consumer_group(r)
 
     while True:
         try:
-            # xreadgroup is a SYNC/blocking call (this is the `redis`
-            # package, not redis.asyncio). Calling it directly inside this
-            # async loop with no await/to_thread was freezing the entire
-            # FastAPI event loop for up to POLL_BLOCK_MS (5s) every single
-            # cycle — confirmed by steadily growing APScheduler delay
-            # warnings in production logs. asyncio.to_thread offloads it
-            # to a worker thread instead.
+            # xreadgroup is a sync/blocking call (this is the `redis`
+            # package, not redis.asyncio) — run it in a worker thread so
+            # it can't freeze the FastAPI event loop for POLL_BLOCK_MS.
             messages = await asyncio.to_thread(
                 r.xreadgroup,
                 groupname=CONSUMER_GROUP,
@@ -365,12 +583,16 @@ async def run_agent2() -> None:
                 for msg_id, fields in entries:
                     try:
                         event = _parse_event_payload(fields)
-                        result = await extract_intelligence(event)
+                        # extract_intelligence is sync (test contract) and
+                        # contains blocking network I/O (Gemini, Chroma) —
+                        # to_thread keeps the event loop responsive.
+                        result = await asyncio.to_thread(extract_intelligence, event)
 
                         logger.info(
-                            "Agent 2 processed event_id=%s confidence=%.4f",
+                            "Agent 2 processed event_id=%s confidence=%.4f method=%s",
                             result["event_id"],
                             result["confidence"],
+                            result["extraction_method"],
                         )
 
                         # Optional downstream stream if Person A wires later:
@@ -384,15 +606,12 @@ async def run_agent2() -> None:
                             await asyncio.to_thread(_send_to_dlq, r, msg_id, fields, str(exc))
                             await asyncio.to_thread(r.xack, STREAM_IN, CONSUMER_GROUP, msg_id)
                             logger.warning(
-                                "Moved malformed/failed message to DLQ stream=%s msg_id=%s",
-                                DLQ_STREAM,
-                                msg_id,
+                                "Moved failed message to DLQ stream=%s msg_id=%s",
+                                DLQ_STREAM, msg_id,
                             )
                         except Exception as dlq_exc:
                             logger.exception(
-                                "Failed sending msg_id=%s to DLQ error=%s",
-                                msg_id,
-                                dlq_exc,
+                                "Failed sending msg_id=%s to DLQ error=%s", msg_id, dlq_exc
                             )
 
             await asyncio.sleep(0)

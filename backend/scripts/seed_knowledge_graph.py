@@ -123,6 +123,44 @@ def seed_refineries(tx):
         """, r)
 
 
+def seed_other_refineries(tx):
+    """
+    Fix (Person B, Day 13, refinery utilization scope correction):
+
+    The 4 modeled refineries (Jamnagar RIL, Vadinar Nayara, Kochi BPCL,
+    Paradip IOCL; combined capacity ~2.26 mbd) represent under half of
+    India's real national refining capacity (~5.1 mbd across 20+ actual
+    refineries). Even after _compute_refinery_weights() correctly scales
+    the TOTAL weight these 4 refineries absorb down to
+    (modeled_capacity / national_consumption) ~ 0.44, each individual
+    compatible refinery still absorbs a disproportionate SHARE of that
+    scaled weight relative to its own capacity, because no other
+    compatible refinery exists in the graph to share the burden with.
+    This produced Jamnagar's -25% utilization drop vs the spec's -7% to
+    -11% target for this scenario.
+
+    Fix: add ONE aggregate node representing the rest of India's real
+    refining capacity (~2.9 mbd = 5.1 total - 2.26 modeled), connected
+    with the same COMPATIBLE_WITH breadth as the demo refineries, so the
+    weight-splitting math has a realistic base to divide the disrupted
+    share across. This corrects the model's scope rather than adjusting
+    any output number directly -- consistent with "never hardcode
+    outputs." Excluded from refinery_names in simulation.run_all()'s
+    default list, so it never appears as a dashboard card in the demo --
+    it exists purely so the weight math is correct for the refineries
+    that DO appear.
+    """
+    tx.run("""
+        MERGE (n:Refinery {name: 'Other India Refineries'})
+        SET n.owner = 'Various (aggregate)',
+            n.capacity_mbd = 2.9,
+            n.location = 'National (aggregate)',
+            n.compatible_share = 1.0,
+            n.is_aggregate = true,
+            n.note = 'Aggregate node representing remaining Indian refining capacity not individually modeled; used only for national-scope weight normalization in simulation._compute_refinery_weights(), never shown as a dashboard card.'
+    """)
+
+
 def seed_storage(tx):
     sites = [
         {"name": "Visakhapatnam SPR", "type": "SPR", "capacity_mb": 9.0, "location": "Visakhapatnam"},
@@ -227,7 +265,14 @@ def seed_relationships(tx):
         "MATCH (s:Supplier {name:'Kuwait'}), (g:CrudeGrade {name:'Kuwait Export'}) MERGE (s)-[:PRODUCES]->(g)",
         "MATCH (s:Supplier {name:'Venezuela'}), (g:CrudeGrade {name:'Venezuelan Merey'}) MERGE (s)-[:PRODUCES]->(g)",
 
-        "MATCH (g:CrudeGrade), (r:Refinery) WHERE NOT (g.name = 'Venezuelan Merey' AND r.name = 'Kochi BPCL') MERGE (g)-[:COMPATIBLE_WITH]->(r)",
+        "MATCH (g:CrudeGrade), (r:Refinery) WHERE NOT (g.name = 'Venezuelan Merey' AND r.name = 'Kochi BPCL') AND r.name <> 'Other India Refineries' MERGE (g)-[:COMPATIBLE_WITH]->(r)",
+
+        # Fix (Person B, Day 13): the aggregate 'Other India Refineries' node
+        # is compatible with every crude grade, so it can absorb its
+        # proportional share of ANY disrupted supplier's gap in
+        # _compute_refinery_weights() -- matching its role as a stand-in
+        # for the rest of India's real, more diversified refining fleet.
+        "MATCH (g:CrudeGrade), (r:Refinery {name:'Other India Refineries'}) MERGE (g)-[:COMPATIBLE_WITH]->(r)",
 
         "MATCH (s:Supplier {name:'Saudi Arabia'}), (r:Route {name:'Saudi to Jamnagar via Hormuz'}) MERGE (s)-[:SHIPS_VIA]->(r)",
         "MATCH (s:Supplier {name:'Saudi Arabia'}), (r:Route {name:'Saudi to Kochi via Cape'}) MERGE (s)-[:SHIPS_VIA]->(r)",
@@ -250,7 +295,7 @@ def seed_relationships(tx):
         # incorrectly shows the Suez route as "surviving" during a Hormuz +
         # Red Sea compound event, when only the Cape route should survive.
         # Previously patched as a one-off script (fix_suez_babelmandeb_link.py)
-        # against the live DB only — moved here so it survives a fresh reseed.
+        # against the live DB only -- moved here so it survives a fresh reseed.
         "MATCH (r:Route {name:'Russia to Vadinar via Suez'}), (c:Chokepoint {name:'Bab-el-Mandeb'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
         "MATCH (r:Route {name:'Saudi to Kochi via Cape'}), (c:Chokepoint {name:'Cape of Good Hope'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
         "MATCH (r:Route {name:'UAE to Paradip via Cape'}), (c:Chokepoint {name:'Cape of Good Hope'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
@@ -304,6 +349,7 @@ def main():
         session.execute_write(seed_chokepoints)
         session.execute_write(seed_ports)
         session.execute_write(seed_refineries)
+        session.execute_write(seed_other_refineries)
         session.execute_write(seed_storage)
         session.execute_write(seed_routes)
         session.execute_write(seed_contracts)
