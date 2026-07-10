@@ -123,6 +123,18 @@ def seed_refineries(tx):
         """, r)
 
 
+def seed_other_refineries(tx):
+    tx.run("""
+        MERGE (n:Refinery {name: 'Other India Refineries'})
+        SET n.owner = 'Various (aggregate)',
+            n.capacity_mbd = 2.9,
+            n.location = 'National (aggregate)',
+            n.compatible_share = 1.0,
+            n.is_aggregate = true,
+            n.note = 'Aggregate node representing remaining Indian refining capacity not individually modeled; used only for national-scope weight normalization in simulation._compute_refinery_weights(), never shown as a dashboard card.'
+    """)
+
+
 def seed_storage(tx):
     sites = [
         {"name": "Visakhapatnam SPR", "type": "SPR", "capacity_mb": 9.0, "location": "Visakhapatnam"},
@@ -159,38 +171,10 @@ def seed_routes(tx):
 
 def seed_contracts(tx):
     contracts = [
-        {
-            "reference": "CNTR-SAUDI-001",
-            "counterparty": "Saudi Arabia",
-            "max_volume_mbd": 0.60,
-            "current_volume_mbd": 0.32,
-            "take_or_pay_floor": 0.20,
-            "expiry": "2027-12-31",
-        },
-        {
-            "reference": "CNTR-UAE-001",
-            "counterparty": "UAE",
-            "max_volume_mbd": 0.40,
-            "current_volume_mbd": 0.18,
-            "take_or_pay_floor": 0.10,
-            "expiry": "2027-12-31",
-        },
-        {
-            "reference": "CNTR-RUSSIA-001",
-            "counterparty": "Russia",
-            "max_volume_mbd": 0.40,
-            "current_volume_mbd": 0.38,
-            "take_or_pay_floor": 0.15,
-            "expiry": "2027-12-31",
-        },
-        {
-            "reference": "CNTR-IRAQ-001",
-            "counterparty": "Iraq",
-            "max_volume_mbd": 0.55,
-            "current_volume_mbd": 0.28,
-            "take_or_pay_floor": 0.18,
-            "expiry": "2027-12-31",
-        },
+        {"reference": "CNTR-SAUDI-001", "counterparty": "Saudi Arabia", "max_volume_mbd": 0.60, "current_volume_mbd": 0.32, "take_or_pay_floor": 0.20, "expiry": "2027-12-31"},
+        {"reference": "CNTR-UAE-001", "counterparty": "UAE", "max_volume_mbd": 0.40, "current_volume_mbd": 0.18, "take_or_pay_floor": 0.10, "expiry": "2027-12-31"},
+        {"reference": "CNTR-RUSSIA-001", "counterparty": "Russia", "max_volume_mbd": 0.40, "current_volume_mbd": 0.38, "take_or_pay_floor": 0.15, "expiry": "2027-12-31"},
+        {"reference": "CNTR-IRAQ-001", "counterparty": "Iraq", "max_volume_mbd": 0.55, "current_volume_mbd": 0.28, "take_or_pay_floor": 0.18, "expiry": "2027-12-31"},
     ]
     for c in contracts:
         tx.run("""
@@ -227,7 +211,9 @@ def seed_relationships(tx):
         "MATCH (s:Supplier {name:'Kuwait'}), (g:CrudeGrade {name:'Kuwait Export'}) MERGE (s)-[:PRODUCES]->(g)",
         "MATCH (s:Supplier {name:'Venezuela'}), (g:CrudeGrade {name:'Venezuelan Merey'}) MERGE (s)-[:PRODUCES]->(g)",
 
-        "MATCH (g:CrudeGrade), (r:Refinery) WHERE NOT (g.name = 'Venezuelan Merey' AND r.name = 'Kochi BPCL') MERGE (g)-[:COMPATIBLE_WITH]->(r)",
+        "MATCH (g:CrudeGrade), (r:Refinery) WHERE NOT (g.name = 'Venezuelan Merey' AND r.name = 'Kochi BPCL') AND r.name <> 'Other India Refineries' MERGE (g)-[:COMPATIBLE_WITH]->(r)",
+
+        "MATCH (g:CrudeGrade), (r:Refinery {name:'Other India Refineries'}) MERGE (g)-[:COMPATIBLE_WITH]->(r)",
 
         "MATCH (s:Supplier {name:'Saudi Arabia'}), (r:Route {name:'Saudi to Jamnagar via Hormuz'}) MERGE (s)-[:SHIPS_VIA]->(r)",
         "MATCH (s:Supplier {name:'Saudi Arabia'}), (r:Route {name:'Saudi to Kochi via Cape'}) MERGE (s)-[:SHIPS_VIA]->(r)",
@@ -243,14 +229,6 @@ def seed_relationships(tx):
         "MATCH (r:Route {name:'Iraq to Paradip via Hormuz'}), (c:Chokepoint {name:'Strait of Hormuz'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
         "MATCH (r:Route {name:'Kuwait to Vizag via Hormuz'}), (c:Chokepoint {name:'Strait of Hormuz'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
         "MATCH (r:Route {name:'Russia to Vadinar via Suez'}), (c:Chokepoint {name:'Suez Canal'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
-        # Fix (Person B, Day 12 compound-scenario verification): a ship sailing
-        # from Russia to Suez Canal must also transit Bab-el-Mandeb/Red Sea to
-        # reach it from the Arabian Sea side. Without this edge, a Red Sea
-        # disruption never blocks this route, and get_surviving_routes()
-        # incorrectly shows the Suez route as "surviving" during a Hormuz +
-        # Red Sea compound event, when only the Cape route should survive.
-        # Previously patched as a one-off script (fix_suez_babelmandeb_link.py)
-        # against the live DB only -- moved here so it survives a fresh reseed.
         "MATCH (r:Route {name:'Russia to Vadinar via Suez'}), (c:Chokepoint {name:'Bab-el-Mandeb'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
         "MATCH (r:Route {name:'Saudi to Kochi via Cape'}), (c:Chokepoint {name:'Cape of Good Hope'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
         "MATCH (r:Route {name:'UAE to Paradip via Cape'}), (c:Chokepoint {name:'Cape of Good Hope'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
@@ -304,6 +282,7 @@ def main():
         session.execute_write(seed_chokepoints)
         session.execute_write(seed_ports)
         session.execute_write(seed_refineries)
+        session.execute_write(seed_other_refineries)
         session.execute_write(seed_storage)
         session.execute_write(seed_routes)
         session.execute_write(seed_contracts)
