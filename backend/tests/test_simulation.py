@@ -326,6 +326,67 @@ class TestPriceImpact:
 
 
 # ---------------------------------------------------------------------------
+# Tests — price_impact beta_compound auto-selection
+# ---------------------------------------------------------------------------
+
+class TestPriceImpactBetaCompound:
+    """
+    Covers the Person B beta-recalibration fix: price_impact() now
+    auto-selects BETA_COMPOUND (0.60) when affected_chokepoint_count >= 2
+    and beta is not explicitly passed, vs BETA_SINGLE (0.45) for a single
+    blocked chokepoint. Explicit beta always overrides auto-selection.
+    """
+
+    def _run(self, severity, gap_pct, baseline=85.0, beta=None, chokepoint_count=1):
+        from agents.simulation import price_impact
+        with patch(PATCH_REDIS, return_value=_mock_redis_no_data()), \
+             patch(PATCH_PRICE_ROW, return_value={"brent_usd": baseline}):
+            return price_impact(
+                disruption_severity=severity,
+                supply_gap_pct=gap_pct,
+                brent_baseline_usd=baseline,
+                beta=beta,
+                affected_chokepoint_count=chokepoint_count,
+            )
+
+    def test_beta_compound_selected_for_two_plus_chokepoints(self):
+        """
+        When affected_chokepoint_count >= 2 and beta is not explicitly
+        passed, price_impact must auto-select BETA_COMPOUND (0.60)
+        instead of BETA_SINGLE (0.45).
+        """
+        result = self._run(severity=0.9766, gap_pct=28.1, beta=None, chokepoint_count=2)
+        assert result["beta_used"] == 0.60
+
+    def test_beta_compound_demo_scenario_matches_hand_calc(self):
+        """
+        Compound demo: Kuwait+Russia via Hormuz+Bab-el-Mandeb.
+        compound_severity ≈ 0.9766, supply_gap_pct ≈ 28.1, beta=0.60
+        price_delta_pct = 0.60 × 0.9766 × 28.1 ≈ 16.47%
+        price_delta_usd = 85.0 × 0.1647 ≈ $14.00
+        Matches Person A's hand-calc of ~$13-14.
+        """
+        result = self._run(severity=0.9766, gap_pct=28.1, baseline=85.0, beta=None, chokepoint_count=2)
+        assert result["beta_used"] == 0.60
+        assert 13.0 < result["price_delta_usd"] < 15.0
+
+    def test_beta_single_still_used_for_one_chokepoint(self):
+        """affected_chokepoint_count=1 (default) must still select BETA_SINGLE."""
+        result = self._run(severity=0.5, gap_pct=22.8, baseline=85.0, beta=None, chokepoint_count=1)
+        assert result["beta_used"] == 0.45
+
+    def test_explicit_beta_overrides_auto_selection(self):
+        """Passing beta explicitly must skip the count-based auto-selection entirely."""
+        result = self._run(severity=0.9766, gap_pct=28.1, baseline=85.0, beta=0.99, chokepoint_count=2)
+        assert result["beta_used"] == 0.99
+
+    def test_beta_used_field_always_present(self):
+        """beta_used must be returned for demo transparency, never omitted."""
+        result = self._run(severity=0.5, gap_pct=20.0, baseline=85.0, beta=None, chokepoint_count=1)
+        assert "beta_used" in result
+
+
+# ---------------------------------------------------------------------------
 # Tests — refinery_utilization
 # ---------------------------------------------------------------------------
 
@@ -466,3 +527,32 @@ class TestRunAll:
         assert result["meta"]["affected_chokepoints"] == ["Hormuz"]
         assert result["meta"]["chokepoint_severities"] == {"Hormuz": 0.5}
         assert "compound_severity" in result["meta"]
+
+    def test_run_all_compound_uses_beta_compound(self):
+        """
+        run_all() with 2+ affected chokepoints must flow through to
+        price_impact's affected_chokepoint_count and select beta_used=0.60,
+        surfaced in meta.beta.
+        """
+        from agents.simulation import run_all
+        compound_risks = [
+            {"supplier": "Kuwait", "import_share": 0.068, "route_risk": 1.0, "primary_chokepoint": "Strait of Hormuz"},
+            {"supplier": "Russia", "import_share": 0.213, "route_risk": 1.0, "primary_chokepoint": "Bab-el-Mandeb"},
+        ]
+        with patch(PATCH_SPR, return_value=MOCK_SPR_TOTAL_MB), \
+             patch(PATCH_REFINERY, return_value=MOCK_REFINERY_SPECS_JAMNAGAR), \
+             patch(PATCH_REDIS, return_value=_mock_redis_no_data()), \
+             patch(PATCH_PRICE_ROW, return_value={"brent_usd": MOCK_BRENT_USD}), \
+             patch("agents.simulation._get_india_daily_consumption", return_value=MOCK_CONSUMPTION_MBD), \
+             patch("agents.simulation.get_refinery_disrupted_share", return_value={
+                 "Jamnagar RIL": {"compatible_grade_count": 1}
+             }):
+            result = run_all(
+                supplier_route_risks=compound_risks,
+                closure_severity={"Strait of Hormuz": 0.82, "Bab-el-Mandeb": 0.87},
+                affected_chokepoint=["Strait of Hormuz", "Bab-el-Mandeb"],
+                refinery_names=["Jamnagar RIL"],
+            )
+
+        assert result["meta"]["beta"] == 0.60
+        assert result["price"]["beta_used"] == 0.60
