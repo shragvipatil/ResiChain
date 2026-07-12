@@ -89,7 +89,23 @@ async def run_agent3():
         # Uses the shared helper (RISK_STATE_KEY + RISK_CACHE_TTL_SECONDS
         # applied internally) instead of a raw setex call — same key,
         # same TTL, same behavior, just centralized.
-        await update_risk_state(risk_vector)
+        #
+        # Demo freeze guard (see scripts/seed_demo_state.py): while the
+        # demo:risk_freeze key exists, Agent 3 still computes the vector
+        # and logs its heartbeat below, but does NOT overwrite risk:state.
+        # Without this, the 60-second schedule wipes seeded/injected demo
+        # values before the demo can use them — the exact race condition
+        # that caused the two false "no blocked chokepoint" failures on
+        # Day 12. The key auto-expires (30-min TTL), so normal operation
+        # is untouched outside demo windows.
+        frozen = await r.get("demo:risk_freeze")
+        if frozen:
+            logger.info(
+                "Agent 3: demo:risk_freeze active — computed vector NOT "
+                "written to risk:state (delete the key to resume live risk)"
+            )
+        else:
+            await update_risk_state(risk_vector)
 
         # "agent3:last_run" is Agent 3's own key, not read anywhere else —
         # left as a local literal on purpose, per the single-file-key rule.

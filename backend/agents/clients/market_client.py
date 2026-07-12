@@ -4,6 +4,14 @@
 # Polls AISHub for vessel positions every 5 minutes
 # Writes all data to Redis with TTL
 # Alpha Vantage daily historical series → PostgreSQL (via Person B's queries)
+#
+# Fix 13 (demo pre-cache): fetch_vessel_positions and fetch_live_prices
+# now check vessels:demo_cache / prices:demo_cache FIRST. Those keys are
+# written by scripts/pre_cache_demo_data.py 30 minutes before a demo and
+# hold real data fetched the same way — so demo output is identical
+# whether the external APIs are reachable or not. When the demo cache
+# keys are absent (i.e. always, outside demo windows — they carry a 2h
+# TTL), behavior is exactly what it was before this fix.
 # ============================================================
 
 import json
@@ -15,6 +23,10 @@ from db.redis_client import get_redis
 from db.postgres_queries import upsert_price_history
 
 logger = logging.getLogger(__name__)
+
+# Fix 13 demo-cache keys (written by scripts/pre_cache_demo_data.py)
+DEMO_VESSELS_CACHE_KEY = "vessels:demo_cache"
+DEMO_PRICES_CACHE_KEY = "prices:demo_cache"
 
 # Arabian Sea + Red Sea bounding boxes
 # Format: (min_lat, max_lat, min_lon, max_lon)
@@ -28,13 +40,32 @@ VESSEL_REGIONS = {
 # ---- Vessel Position Polling ----------------------------
 async def fetch_vessel_positions() -> list:
     """
-    Fetches tanker positions from AISHub API.
-    Filters for VLCC and Suezmax in key regions.
-    Writes to Redis vessels:live with 6-minute TTL.
+    Fetches tanker positions and writes to Redis vessels:live (6-min TTL).
 
-    AISHub requires username — falls back to hardcoded
-    demo positions if credentials not available.
+    Order of preference (Fix 13):
+      1. vessels:demo_cache  (pre-fetched real data, demo windows only)
+      2. AISHub live API     (requires AISHUB_USERNAME)
+      3. hardcoded demo positions
     """
+    r = await get_redis()
+
+    # Fix 13: demo cache first — identical data shape, zero external calls.
+    cached = await r.get(DEMO_VESSELS_CACHE_KEY)
+    if cached:
+        try:
+            vessels = json.loads(cached)
+            await r.setex("vessels:live", 360, cached)
+            logger.info(
+                "Vessels: served %d positions from %s (Fix 13 demo cache)",
+                len(vessels), DEMO_VESSELS_CACHE_KEY,
+            )
+            return vessels
+        except (json.JSONDecodeError, TypeError) as exc:
+            logger.warning(
+                "Vessels: %s unreadable (%s) — falling through to live fetch",
+                DEMO_VESSELS_CACHE_KEY, exc,
+            )
+
     aishub_user = os.getenv("AISHUB_USERNAME", "")
 
     vessels = []
@@ -48,7 +79,6 @@ async def fetch_vessel_positions() -> list:
     else:
         logger.info(f"Vessels: Got {len(vessels)} real positions from AISHub")
 
-    r = await get_redis()
     await r.setex(
         "vessels:live",
         360,  # 6 minutes
@@ -155,18 +185,41 @@ def _get_demo_vessel_positions() -> list:
 # ---- Price Polling --------------------------------------
 async def fetch_live_prices() -> dict:
     """
-    Fetches Brent and WTI prices using yfinance.
-    Writes to Redis prices:live with 6-minute TTL.
+    Fetches Brent and WTI prices and writes to Redis prices:live (6-min TTL).
     Called every 5 minutes by APScheduler.
+
+    Fix 13: checks prices:demo_cache first (pre-fetched real yfinance data);
+    falls through to a live yfinance call when the cache is absent.
     """
     try:
-        prices = await _fetch_prices_yfinance()
+        r = await get_redis()
+
+        # Fix 13: demo cache first.
+        cached = await r.get(DEMO_PRICES_CACHE_KEY)
+        prices = {}
+        from_cache = False
+        if cached:
+            try:
+                prices = json.loads(cached)
+                from_cache = True
+                logger.info(
+                    "Prices: served from %s (Fix 13 demo cache)",
+                    DEMO_PRICES_CACHE_KEY,
+                )
+            except (json.JSONDecodeError, TypeError) as exc:
+                logger.warning(
+                    "Prices: %s unreadable (%s) — falling through to yfinance",
+                    DEMO_PRICES_CACHE_KEY, exc,
+                )
+                prices = {}
+
+        if not prices:
+            prices = await _fetch_prices_yfinance()
 
         if not prices:
             logger.warning("Price fetch: yfinance failed, using cached/default")
             return {}
 
-        r = await get_redis()
         await r.setex(
             "prices:live",
             360,
@@ -180,7 +233,7 @@ async def fetch_live_prices() -> dict:
                 json.dumps({
                     "price": prices["brent"]["price"],
                     "change_pct": prices["brent"]["change_pct"],
-                    "source": "yfinance"
+                    "source": "demo_cache" if from_cache else "yfinance"
                 })
             )
 
@@ -295,4 +348,4 @@ async def fetch_alpha_vantage_daily():
         logger.info(f"Alpha Vantage: Stored {inserted} daily price records")
 
     except Exception as e:
-        logger.error(f"Alpha Vantage daily fetch error: {e}") 
+        logger.error(f"Alpha Vantage error: {e}") 

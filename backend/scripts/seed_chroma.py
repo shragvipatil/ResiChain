@@ -12,6 +12,16 @@ This script is idempotent because db.chroma_client uses:
 from __future__ import annotations
 
 import logging
+import sys
+from pathlib import Path
+
+# Same root cause as scripts/seed_demo_state.py: no PYTHONPATH=/app in the
+# Dockerfile and no __init__.py in scripts/, so `python scripts/seed_chroma.py`
+# only puts /app/scripts on sys.path, not /app — db.chroma_client (at /app/db)
+# can't be found. This has been a pre-existing landmine in this file since
+# before today; it just hadn't been run against a truly clean environment
+# until this clean-boot test caught it.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from db.chroma_client import init_chroma, seed_historical_events
 
@@ -394,4 +404,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main() 
