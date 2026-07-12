@@ -10,8 +10,8 @@ Sets the exact Section-12 pre-demo state:
   2. vessels:live        -> 3 mock AIS tanker positions in the Arabian Sea
   3. audit_events (PG)   -> 1 historical resolved alert (Houthi drone near
                             Bab-el-Mandeb, 6 days ago, stage='resolved')
-  4. agentN:last_run     -> agents 1/2/3 (+5, read by the admin dashboard)
-                            show a run within the last 5 minutes
+  4. agentN:last_run     -> agents 1, 2, 3, 5 (5 is read by the admin
+                            dashboard) show a run within the last 5 minutes
   5. demo:risk_freeze    -> 30-min flag telling Agent 3 NOT to overwrite
                             risk:state with recomputed (near-zero) values.
                             Without this, Agent 3's 60-second scheduled job
