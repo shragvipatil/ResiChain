@@ -260,10 +260,8 @@ app.add_middleware(
 from routers.api import router as api_router
 app.include_router(api_router)
 
-# pdf_router.py doesn't exist in the repo and isn't part of any spec
-# through Day 10 — removed the import someone added ahead of that work.
-# If/when PDF export actually gets built, add it back in with a real
-# router file, not a bare import that can crash the whole app.
+from routers.pdf_router import router as pdf_router
+app.include_router(pdf_router)
 
 # ---- Health Check -------------------------------------------
 @app.get("/health", tags=["System"])
@@ -364,4 +362,4 @@ async def broadcast_to_dashboard(message_type: str, data: dict):
             "Hormuz": 0.82, "Red_Sea": 0.87, "Suez": 0.41, "Cape": 0.12
         })
     """
-    await manager.broadcast({"type": message_type, "data": data}) 
+    await manager.broadcast({"type": message_type, "data": data})

@@ -20,15 +20,17 @@ import { getAgentStatus } from "../api/endpoints";
 import { AgentInfo, AgentStatus } from "../types";
 
 // ── Agent metadata (labels and descriptions never come from the API) ──────────
+// Keys match the real backend response shape from GET /api/agents/status
+// (agent1, agent2... no underscore) — confirmed against routers/api.py.
 const AGENT_META: Record<string, { label: string; description: string; mode: "background" | "crisis" }> = {
-  agent_1: { label: "Agent 1",  description: "Ingestion & Verification",   mode: "background" },
-  agent_2: { label: "Agent 2",  description: "RAG Event Classifier",       mode: "background" },
-  agent_3: { label: "Agent 3",  description: "Corridor Risk Engine",        mode: "background" },
-  agent_4: { label: "Agent 4",  description: "Compound Disruption Detector",mode: "crisis"     },
-  agent_5: { label: "Agent 5",  description: "SPR LP Optimiser",            mode: "crisis"     },
-  agent_6: { label: "Agent 6",  description: "Procurement Orchestrator",    mode: "crisis"     },
-  agent_7: { label: "Agent 7",  description: "Constraint Validator",        mode: "crisis"     },
-  agent_8: { label: "Agent 8",  description: "Playbook Generator",          mode: "crisis"     },
+  agent1: { label: "Agent 1",  description: "Ingestion & Verification",   mode: "background" },
+  agent2: { label: "Agent 2",  description: "RAG Event Classifier",       mode: "background" },
+  agent3: { label: "Agent 3",  description: "Corridor Risk Engine",        mode: "background" },
+  agent4: { label: "Agent 4",  description: "Compound Disruption Detector",mode: "crisis"     },
+  agent5: { label: "Agent 5",  description: "SPR LP Optimiser",            mode: "crisis"     },
+  agent6: { label: "Agent 6",  description: "Procurement Orchestrator",    mode: "crisis"     },
+  agent7: { label: "Agent 7",  description: "Constraint Validator",        mode: "crisis"     },
+  agent8: { label: "Agent 8",  description: "Playbook Generator",          mode: "crisis"     },
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -62,11 +64,23 @@ const SpinRing: React.FC = () => (
   </svg>
 );
 
+// Backend sends lowercase status values ("running"/"idle"/"standby"/"error");
+// frontend AgentStatus type is uppercase. Normalize here rather than asking
+// the backend to change an already-working, tested response shape.
+function normalizeStatus(raw: string | undefined): AgentStatus {
+  const s = (raw ?? "").toLowerCase();
+  if (s === "running") return "RUNNING";
+  if (s === "idle") return "IDLE";
+  if (s === "error") return "ERROR";
+  return "INACTIVE";   // covers backend's "standby" and any unknown value
+}
+
 // ── Single agent row ──────────────────────────────────────────────────────────
 const AgentRow: React.FC<{ id: string; info: AgentInfo }> = ({ id, info }) => {
   const meta   = AGENT_META[id] ?? { label: id, description: "—", mode: "background" };
-  const cfg    = statusConfig(info.status);
-  const isRun  = info.status === "RUNNING";
+  const status = normalizeStatus(info.status);
+  const cfg    = statusConfig(status);
+  const isRun  = status === "RUNNING";
 
   return (
     <div className="flex items-center gap-3 py-2.5 border-b border-slate-700/50 last:border-0">
@@ -112,7 +126,7 @@ const AgentRow: React.FC<{ id: string; info: AgentInfo }> = ({ id, info }) => {
 
 // ── Panel ─────────────────────────────────────────────────────────────────────
 const AgentStatusPanel: React.FC = () => {
-  const { agentStatus, setAgentStatus, wsConnected } = useAppContext();
+  const { agentStatus, setAgentStatus, wsConnected, riskState } = useAppContext();
 
   // Seed initial agent status from API on mount
   useEffect(() => {
@@ -120,7 +134,7 @@ const AgentStatusPanel: React.FC = () => {
   }, [setAgentStatus]);
 
   const agents = agentStatus?.agents ?? {};
-  const runningCount  = Object.values(agents).filter((a) => a.status === "RUNNING").length;
+  const runningCount  = Object.values(agents).filter((a) => normalizeStatus(a.status) === "RUNNING").length;
   const streamDepths  = agentStatus?.redis_stream_depths;
 
   return (
@@ -168,8 +182,8 @@ const AgentStatusPanel: React.FC = () => {
           <div className="ml-auto">
             <p className="text-slate-600 text-xs">
               Crisis mode:{" "}
-            <span className={agentStatus?.crisis_mode_active ? "text-red-400" : "text-green-400"}>
-              {agentStatus?.crisis_mode_active ? "ACTIVE" : "Inactive"}
+            <span className={riskState?.system_mode === "CRISIS" ? "text-red-400" : "text-green-400"}>
+              {riskState?.system_mode === "CRISIS" ? "ACTIVE" : "Inactive"}
             </span>
             </p>
           </div>
