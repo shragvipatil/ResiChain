@@ -91,6 +91,16 @@ const RevealedCard: React.FC<{ option: ProcurementOption }> = ({ option }) => {
   );
 };
 
+// ── Timing constants ──────────────────────────────────────────────
+// Per CLAUDE.md / Day 6 spec: 0.8s delay between each card; full 5-card
+// sequence should take ~5 seconds. Verified Day 14 — tuned so each card
+// gets a clean 800ms slot (card N starts at N*800ms), with the result
+// revealing 500ms into that slot for a consistent "spinner pause, then
+// reveal" rhythm rather than an uneven gap before the next card.
+const CARD_INTERVAL_MS  = 800;
+const REVEAL_OFFSET_MS  = 500;   // time within each card's slot before reveal
+const FINAL_SETTLE_MS   = 400;   // pause after last card reveals before "done"
+
 // ── Main component ──────────────────────────────────────────────────
 const RejectionTraceAnimation: React.FC<RejectionTraceAnimationProps> = ({
   options,
@@ -109,15 +119,15 @@ const RejectionTraceAnimation: React.FC<RejectionTraceAnimationProps> = ({
     setPlaying(true);
 
     options.forEach((option, i) => {
-      // show evaluating
+      // show evaluating — card N appears at N * 800ms
       setTimeout(() => {
         setCards((prev) => [
           ...prev,
           { option, state: "evaluating" },
         ]);
-      }, i * 800);
+      }, i * CARD_INTERVAL_MS);
 
-      // reveal result
+      // reveal result — 500ms into that card's 800ms slot
       setTimeout(() => {
         setCards((prev) =>
           prev.map((c, idx) =>
@@ -129,9 +139,9 @@ const RejectionTraceAnimation: React.FC<RejectionTraceAnimationProps> = ({
           setTimeout(() => {
             setDone(true);
             setPlaying(false);
-          }, 300);
+          }, FINAL_SETTLE_MS);
         }
-      }, i * 800 + 600);
+      }, i * CARD_INTERVAL_MS + REVEAL_OFFSET_MS);
     });
   }, [options, playing]);
 
