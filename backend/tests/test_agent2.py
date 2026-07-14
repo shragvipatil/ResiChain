@@ -468,3 +468,68 @@ class TestRedisConsumerGroup:
 def redis_busygroup_error():
     import redis as redis_lib
     return redis_lib.exceptions.ResponseError("BUSYGROUP Consumer Group name already exists")
+# ===========================================================================
+# Tests -- Fix 6: backoff delay timing
+# ===========================================================================
+
+class TestGeminiBackoffTiming:
+    def test_backoff_delays_are_1_then_2_seconds(self):
+        import agents.agent2 as a2
+        mock_col = _make_mock_collection()
+        a2._collection = mock_col
+        a2._embedder = _make_mock_embedder()
+        a2._nlp = None
+
+        mock_model = MagicMock()
+        mock_model.generate_content.side_effect = RuntimeError("Simulated failure")
+
+        mock_genai = MagicMock()
+        mock_genai.GenerativeModel.return_value = mock_model
+        mock_genai.GenerationConfig = MagicMock()
+        mock_genai.configure = MagicMock()
+
+        mock_ent = MagicMock(); mock_ent.text = "Hormuz"; mock_ent.label_ = "LOC"
+        mock_doc = MagicMock(); mock_doc.ents = [mock_ent]
+        mock_nlp = MagicMock(); mock_nlp.return_value = mock_doc
+        mock_spacy = MagicMock(); mock_spacy.load.return_value = mock_nlp
+
+        with patch(PATCH_GENAI, mock_genai), \
+             patch(PATCH_SPACY_LOAD, mock_spacy), \
+             patch("agents.agent2.time.sleep") as mock_sleep:
+            a2.extract_intelligence(SAMPLE_EVENT)
+
+        actual_delays = [call.args[0] for call in mock_sleep.call_args_list]
+        assert actual_delays == [1, 2], f"Expected [1, 2], got {actual_delays}"
+
+# ===========================================================================
+# Tests -- Fix 6: backoff delay timing
+# ===========================================================================
+
+class TestGeminiBackoffTiming:
+    def test_backoff_delays_are_1_then_2_seconds(self):
+        import agents.agent2 as a2
+        mock_col = _make_mock_collection()
+        a2._collection = mock_col
+        a2._embedder = _make_mock_embedder()
+        a2._nlp = None
+
+        mock_model = MagicMock()
+        mock_model.generate_content.side_effect = RuntimeError("Simulated failure")
+
+        mock_genai = MagicMock()
+        mock_genai.GenerativeModel.return_value = mock_model
+        mock_genai.GenerationConfig = MagicMock()
+        mock_genai.configure = MagicMock()
+
+        mock_ent = MagicMock(); mock_ent.text = "Hormuz"; mock_ent.label_ = "LOC"
+        mock_doc = MagicMock(); mock_doc.ents = [mock_ent]
+        mock_nlp = MagicMock(); mock_nlp.return_value = mock_doc
+        mock_spacy = MagicMock(); mock_spacy.load.return_value = mock_nlp
+
+        with patch(PATCH_GENAI, mock_genai), \
+             patch(PATCH_SPACY_LOAD, mock_spacy), \
+             patch("agents.agent2.time.sleep") as mock_sleep:
+            a2.extract_intelligence(SAMPLE_EVENT)
+
+        actual_delays = [call.args[0] for call in mock_sleep.call_args_list]
+        assert actual_delays == [1, 2], f"Expected [1, 2], got {actual_delays}"

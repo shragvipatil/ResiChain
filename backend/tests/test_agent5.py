@@ -328,3 +328,28 @@ class TestRunAgent5:
 
         assert result_state["spr_schedule"]["feasible"] is True
         assert result_state["spr_schedule"]["inputs_used"]["used_approved_cargoes"] is True
+# ---------------------------------------------------------------------------
+# Tests -- no inputs provided (defaults to zero imports)
+# ---------------------------------------------------------------------------
+
+class TestNoInputsDefault:
+    def test_no_inputs_defaults_to_zero_imports(self):
+        result = _solve(available_imports=None, approved_cargoes=None)
+        assert result["inputs_used"]["imports_mbd"] == [0.0] * HORIZON
+
+    def test_no_inputs_used_approved_cargoes_is_false(self):
+        result = _solve(available_imports=None, approved_cargoes=None)
+        assert result["inputs_used"]["used_approved_cargoes"] is False
+
+# ---------------------------------------------------------------------------
+# Tests -- no inputs provided (defaults to zero imports)
+# ---------------------------------------------------------------------------
+
+class TestNoInputsDefault:
+    def test_no_inputs_defaults_to_zero_imports(self):
+        result = _solve(available_imports=None, approved_cargoes=None)
+        assert result["inputs_used"]["imports_mbd"] == [0.0] * HORIZON
+
+    def test_no_inputs_used_approved_cargoes_is_false(self):
+        result = _solve(available_imports=None, approved_cargoes=None)
+        assert result["inputs_used"]["used_approved_cargoes"] is False

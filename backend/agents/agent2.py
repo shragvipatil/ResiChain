@@ -621,3 +621,4 @@ async def run_agent2() -> None:
         except Exception as exc:
             logger.exception("Agent 2 loop error: %s", exc)
             await asyncio.sleep(5)
+
