@@ -7,8 +7,14 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+    # Day 15 hardening: bind to 127.0.0.1 only. Containers still reach
+    # Postgres via the resichain_network as "postgres:5432"; this just
+    # stops the DB port being reachable from outside the host. To make it
+    # fully internal (not even localhost), delete the ports block entirely
+    # — kept as localhost-only so you can still psql from your machine
+    # during the demo if needed.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -24,8 +30,10 @@ services:
     image: redis:7-alpine
     container_name: resichain_redis
     restart: unless-stopped
+    # Localhost-only (see postgres note). Kept reachable from the host so
+    # your seed_demo_state / redis-cli demo commands still work.
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes
@@ -48,8 +56,16 @@ services:
       NEO4J_dbms_security_procedures_unrestricted: apoc.*
       NEO4J_dbms_memory_heap_initial__size: 512m
       NEO4J_dbms_memory_heap_max__size: 1G
-    ports:
-      - "7687:7687"
+    # Day 15 hardening: NO external port exposure. Per the task spec, the
+    # frontend's D3 graph does NOT query Neo4j directly — it queries the
+    # FastAPI backend (/api/kgraph), which reaches Neo4j internally over
+    # resichain_network as "neo4j:7687". So neither the Bolt port (7687)
+    # nor the browser port (7474) needs to be published to the host.
+    # Removing the ports block closes both. FastAPI still connects fine
+    # because containers on the same network resolve each other by name.
+    #
+    # (If you need to open the Neo4j Browser for debugging, temporarily
+    # add:  ports: ["127.0.0.1:7474:7474", "127.0.0.1:7687:7687"]  )
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
@@ -68,8 +84,9 @@ services:
       dockerfile: Dockerfile.chromadb
     container_name: resichain_chromadb
     restart: unless-stopped
+    # Localhost-only. FastAPI reaches it internally as "chromadb:8000".
     ports:
-      - "8001:8000"
+      - "127.0.0.1:8001:8000"
     volumes:
       - chromadb_data:/data
     healthcheck:
@@ -93,8 +110,29 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    # The ONLY service intentionally published to the host. The frontend
+    # and any judge's browser talk to the system through this one port;
+    # every database sits behind it on the internal network.
     ports:
       - "8000:8000"
+    # Day 15 production command: no --reload (already absent), explicit
+    # worker count. IMPORTANT — WORKERS defaults to 1 on purpose:
+    #   main.py starts APScheduler + the LangGraph Postgres checkpointer
+    #   inside lifespan, which runs ONCE PER WORKER. With 2 workers you'd
+    #   get two schedulers → Agent 3 firing twice a minute, OFAC
+    #   downloading twice, duplicate ingestion. For a single-node demo,
+    #   1 worker is correct. Only raise WORKERS after gating the scheduler
+    #   to a single worker (e.g. an env flag that only worker-0 starts it).
+    # Override without editing this file:  WORKERS=2 docker-compose up
+    command: >
+      uvicorn main:app
+      --host 0.0.0.0
+      --port 8000
+      --workers ${WORKERS:-1}
+    # Dev convenience: live code mount. For a truly frozen production
+    # image you'd remove this so the container runs only the COPY'd code
+    # baked at build time. Kept for the hackathon so teammates' pulled
+    # changes apply without a rebuild — note it in SETUP.md.
     volumes:
       - ./backend:/app
     depends_on:
