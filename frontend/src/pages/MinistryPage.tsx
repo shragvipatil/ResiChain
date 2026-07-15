@@ -174,7 +174,7 @@ const MinistryPage: React.FC = () => {
               {riskState?.system_mode ?? "—"}
             </span>
           </p>
-          <p className="text-slate-500 text-xs mt-1">Last updated: {riskState?.last_updated ?? "—"}</p>
+          <p className="text-slate-500 text-xs mt-1">Last updated: {riskState?.updated_at ?? "—"}</p>
         </div>
         {vessels.length > 0 && (
           <p className="text-slate-600 text-xs">{vessels.length} vessels · refreshes every 5 min</p>

@@ -11,8 +11,8 @@ export interface CorridorRiskState {
     Suez: CorridorDetail;
     Cape: CorridorDetail;
   };
-  compound_risk: number;
-  last_updated: string;
+  compound_risk?: number;   // only present during compound disruption — confirmed absent in baseline GET /api/risk-state response
+  updated_at: string | null;  // confirmed actual field name from backend (not last_updated)
   system_mode: "NORMAL" | "WATCH" | "CRISIS";
 }
 
@@ -124,6 +124,7 @@ export interface AgentsStatusResponse {
   system_mode: "NORMAL" | "WATCH" | "CRISIS";
 }
 export type WebSocketEventType =
+  | "connected"   // initial handshake confirmation sent by backend on connect — no-op on frontend
   | "RISK_STATE_UPDATED"
   | "WATCH_ALERT"
   | "CONFIRMED_ALERT"
@@ -134,7 +135,7 @@ export type WebSocketEventType =
 
 export interface WebSocketEvent {
   type: WebSocketEventType;
-  payload: Record<string, unknown>;
+  data: Record<string, unknown>;   // confirmed actual field name from backend — was "payload", never matched
 }
 // ── Playbook types (Day 8) ────────────────────────────────────────────────────
 

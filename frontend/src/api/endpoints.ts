@@ -1,4 +1,4 @@
-import { USE_MOCK, apiClient } from "./client";
+import { USE_MOCK, AUTH_USE_MOCK, apiClient } from "./client";
 import {
   mockRiskState, mockProcurement,
   mockPrices, mockAgentStatus, mockVessels, mockPlaybook,
@@ -20,7 +20,39 @@ export const getRiskState = async (): Promise<CorridorRiskState> => {
 export const getProcurementOptions = async (): Promise<ProcurementResponse> => {
   if (USE_MOCK) { await delay(500); return mockProcurement; }
   const res = await apiClient.get("/procurement/options");
-  return res.data;
+  const raw = res.data;
+
+  // Real backend (/api/procurement/options, both the Agent 6 live path and
+  // the mock fallback) returns { options: [...], total, generated_at?,
+  // source } — no surviving_corridors field, no evaluated_at, and each
+  // option uses id/grade instead of option_id/crude_grade. Same class of
+  // mismatch as risk-state and vessels earlier today. Normalizing here so
+  // ProcurementPage doesn't need to change.
+  const rawOptions: any[] = raw?.options ?? [];
+  const options = rawOptions.map((o: any) => ({
+    option_id:                  o.option_id ?? o.id ?? "",
+    supplier:                   o.supplier ?? "Unknown",
+    crude_grade:                o.crude_grade ?? o.grade ?? "",
+    status:                     o.status ?? "BLOCKED",
+    confidence:                 o.confidence ?? 0,
+    rule_triggered:             o.rule_triggered,
+    reason:                     o.reason ?? (o.block_reason
+      ? { rule: o.rule_triggered ?? "UNKNOWN", value: o.block_reason, threshold: null, source: "" }
+      : null),
+    route:                      o.route,
+    transit_days:               o.transit_days,
+    cost_delta_usd_per_barrel:  o.cost_delta_usd_per_barrel ?? o.price_premium_pct,
+    volume_mbd:                 o.volume_mbd,
+    tanker_available:           o.tanker_available,
+    max_allowed_delta_mbd:      o.max_allowed_delta_mbd,
+    evaluated_at:               o.evaluated_at ?? raw?.generated_at ?? new Date().toISOString(),
+  }));
+
+  return {
+    evaluated_at:         raw?.generated_at ?? new Date().toISOString(),
+    surviving_corridors:  raw?.surviving_corridors ?? [],
+    options,
+  };
 };
 
 export const getLivePrices = async (): Promise<PricesResponse> => {
@@ -38,7 +70,34 @@ export const getAgentStatus = async (): Promise<AgentsStatusResponse> => {
 export const getVessels = async (): Promise<VesselsResponse> => {
   if (USE_MOCK) { await delay(300); return mockVessels; }
   const res = await apiClient.get("/map/vessels");
-  return res.data;
+  const raw = res.data;
+
+  // Real backend sends { mmsi, name, lat, lon, speed, destination, vessel_type }
+  // Frontend Vessel type expects { latitude, longitude, speed_knots, heading_degrees }.
+  // Confirmed root cause of "Invalid LatLng object: (undefined, undefined)" crash
+  // in ShippingMap — Leaflet received undefined for v.latitude/v.longitude since
+  // those exact field names don't exist on the real API response. Normalizing here.
+  const rawVessels: unknown[] = Array.isArray(raw) ? raw : raw?.vessels ?? [];
+  const vessels = rawVessels
+    .map((v: any) => ({
+      mmsi:            v.mmsi ?? "",
+      name:            v.name ?? "Unknown Vessel",
+      vessel_type:     v.vessel_type ?? "unknown",
+      latitude:        v.latitude ?? v.lat,
+      longitude:       v.longitude ?? v.lon,
+      speed_knots:     v.speed_knots ?? v.speed ?? 0,
+      heading_degrees: v.heading_degrees ?? 0,   // real backend doesn't send this yet — default to 0
+      last_updated:    v.last_updated ?? new Date().toISOString(),
+    }))
+    // Guard against any vessel still missing coordinates after normalization —
+    // better to silently drop it than crash the whole map again.
+    .filter((v) => typeof v.latitude === "number" && typeof v.longitude === "number");
+
+  return {
+    vessels,
+    cache_age_seconds: raw?.cache_age_seconds ?? 0,
+    source: raw?.source ?? "live",
+  };
 };
 
 export const updateRiskWeights = async (weights: {
@@ -181,7 +240,7 @@ const MOCK_USERS: Record<string, { user: User; password: string; requiresTotp: b
 };
 
 export const login = async (body: LoginRequest): Promise<LoginResponse> => {
-  if (USE_MOCK) {
+  if (AUTH_USE_MOCK) {
     await delay(500);
     const record = MOCK_USERS[body.email];
     if (!record || record.password !== body.password) {
@@ -203,7 +262,7 @@ export const login = async (body: LoginRequest): Promise<LoginResponse> => {
 };
 
 export const logout = async (): Promise<void> => {
-  if (USE_MOCK) {
+  if (AUTH_USE_MOCK) {
     await delay(200);
     sessionStorage.removeItem("mock_user");
     return;
@@ -212,7 +271,7 @@ export const logout = async (): Promise<void> => {
 };
 
 export const getCurrentUser = async (): Promise<User | null> => {
-  if (USE_MOCK) {
+  if (AUTH_USE_MOCK) {
     await delay(150);
     const raw = sessionStorage.getItem("mock_user");
     return raw ? JSON.parse(raw) : null;

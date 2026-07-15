@@ -145,13 +145,19 @@ const RejectionTraceAnimation: React.FC<RejectionTraceAnimationProps> = ({
     });
   }, [options, playing]);
 
-  // auto play on mount
+  // Auto-play once on mount only. Deliberately NOT depending on `play` —
+  // `play` is a useCallback that depends on `playing`, so its reference
+  // changes every time playing flips true->false at the end of a sequence.
+  // With `play` in the dependency array, this effect re-fired every time
+  // a sequence finished, causing an infinite auto-replay loop (confirmed
+  // bug: "keeps running continuously, loads after every result, doesn't stop").
   useEffect(() => {
     if (autoPlay && options.length > 0) {
       const t = setTimeout(() => play(), 300);
       return () => clearTimeout(t);
     }
-  }, [autoPlay, options.length, play]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoPlay, options.length]);
 
   // replay trigger
   useEffect(() => {
