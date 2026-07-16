@@ -22,12 +22,8 @@ export const getProcurementOptions = async (): Promise<ProcurementResponse> => {
   const res = await apiClient.get("/procurement/options");
   const raw = res.data;
 
-  // Real backend (/api/procurement/options, both the Agent 6 live path and
-  // the mock fallback) returns { options: [...], total, generated_at?,
-  // source } — no surviving_corridors field, no evaluated_at, and each
-  // option uses id/grade instead of option_id/crude_grade. Same class of
-  // mismatch as risk-state and vessels earlier today. Normalizing here so
-  // ProcurementPage doesn't need to change.
+  // Real backend returns { options: [...], total, generated_at?, source }
+  // with each option using id/grade instead of option_id/crude_grade.
   const rawOptions: any[] = raw?.options ?? [];
   const options = rawOptions.map((o: any) => ({
     option_id:                  o.option_id ?? o.id ?? "",
@@ -75,8 +71,7 @@ export const getVessels = async (): Promise<VesselsResponse> => {
   // Real backend sends { mmsi, name, lat, lon, speed, destination, vessel_type }
   // Frontend Vessel type expects { latitude, longitude, speed_knots, heading_degrees }.
   // Confirmed root cause of "Invalid LatLng object: (undefined, undefined)" crash
-  // in ShippingMap — Leaflet received undefined for v.latitude/v.longitude since
-  // those exact field names don't exist on the real API response. Normalizing here.
+  // in ShippingMap. Normalizing here.
   const rawVessels: unknown[] = Array.isArray(raw) ? raw : raw?.vessels ?? [];
   const vessels = rawVessels
     .map((v: any) => ({
@@ -86,11 +81,9 @@ export const getVessels = async (): Promise<VesselsResponse> => {
       latitude:        v.latitude ?? v.lat,
       longitude:       v.longitude ?? v.lon,
       speed_knots:     v.speed_knots ?? v.speed ?? 0,
-      heading_degrees: v.heading_degrees ?? 0,   // real backend doesn't send this yet — default to 0
+      heading_degrees: v.heading_degrees ?? 0,
       last_updated:    v.last_updated ?? new Date().toISOString(),
     }))
-    // Guard against any vessel still missing coordinates after normalization —
-    // better to silently drop it than crash the whole map again.
     .filter((v) => typeof v.latitude === "number" && typeof v.longitude === "number");
 
   return {
@@ -116,7 +109,51 @@ export const updateRiskWeights = async (weights: {
 export const getPlaybook = async (id: string): Promise<Playbook> => {
   if (USE_MOCK) { await delay(400); return mockPlaybook; }
   const res = await apiClient.get(`/playbook/${id}`);
-  return res.data;
+  const raw = res.data;
+
+  // Real backend playbook shape (confirmed live via curl) is entirely
+  // different from the frontend Playbook type — this is Agent 8's mock
+  // output shape (id, event_summary, spr_schedule, evidence_chain) with
+  // NO actions array at all, vs. what PlaybookPage was built against
+  // (playbook_id, corridor_affected, actions[]). Without this actions
+  // array, initActionStates(pb.actions) called .map() on undefined and
+  // crashed. Normalizing here — synthesizing a single action summarizing
+  // the playbook until Agent 8's real per-action breakdown is available.
+  const evidence = raw.evidence_chain ?? {};
+  const signalSeconds = evidence.signal_to_playbook_seconds ?? 0;
+  const readyAt = raw.created_at ?? new Date().toISOString();
+  const detectedAt = new Date(
+    new Date(readyAt).getTime() - signalSeconds * 1000
+  ).toISOString();
+
+  const syntheticActions = Array.isArray(raw.actions) && raw.actions.length > 0
+    ? raw.actions
+    : [{
+        action_id:                 raw.id ?? id,
+        title:                     raw.event_summary ?? "Recommended response",
+        supplier:                  "Diversified suppliers",
+        crude_grade:               "Mixed",
+        route:                     "Cape of Good Hope",
+        confidence:                raw.overall_confidence ?? 0,
+        cost_delta_usd_per_barrel: raw.cost_delta_bn ? raw.cost_delta_bn * 1000 : 0,
+        volume_mbd:                raw.spr_schedule?.daily_drawdown_mbd ?? 0,
+        transit_days:              raw.spr_schedule?.duration_days ?? 0,
+        contract_reference:        "—",
+        rationale:                 `Supply continuity: ${raw.supply_continuity_pct ?? "—"}%`,
+      }];
+
+  return {
+    playbook_id:        raw.id ?? raw.playbook_id ?? id,
+    status:              raw.status ?? "pending_review",
+    created_at:          raw.created_at ?? new Date().toISOString(),
+    signal_detected_at:  raw.signal_detected_at ?? detectedAt,
+    playbook_ready_at:   raw.playbook_ready_at ?? readyAt,
+    corridor_affected:   raw.corridor_affected ?? raw.event_summary ?? "—",
+    compound_risk:       raw.compound_risk ?? 0,
+    overall_confidence:  raw.overall_confidence ?? 0,
+    actions:             syntheticActions,
+    analyst_notes:       raw.analyst_notes,
+  };
 };
 
 export const approvePlaybook = async (

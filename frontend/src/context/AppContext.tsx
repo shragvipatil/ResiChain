@@ -3,16 +3,11 @@ import { CorridorRiskState, CorridorDetail, AgentsStatusResponse, WebSocketEvent
 import { useWebSocket } from "../hooks/useWebSocket";
 
 /**
- * Agent 3's WebSocket broadcast (agent3_risk_engine.py `_emit_risk_update`)
- * sends each corridor as a raw float: { "Hormuz": 0.5028, ... }
- * The REST endpoint GET /api/risk-state sends each corridor as an object:
- * { "Hormuz": { "risk_score": 0.5028, "status": "...", "trend": "..." } }
- * Confirmed root cause of dashboard showing "NaN%" — detail.risk_score on
- * a raw number is undefined. Normalizing here so every consumer (Ministry,
- * Viewer, ShippingMap, KnowledgeGraph) gets a consistent shape regardless
- * of which backend code path produced the update. Flagged to Person A as
- * a contract drift worth aligning at the source, but the frontend needs
- * to be robust to both shapes in the meantime given time constraints.
+ * Agent 3's WebSocket broadcast sends each corridor as a raw float:
+ * { "Hormuz": 0.5028, ... }. The REST endpoint GET /api/risk-state sends
+ * each corridor as an object: { "Hormuz": { "risk_score": 0.5028, ... } }.
+ * Confirmed root cause of dashboard showing "NaN%". Normalizing here so
+ * every consumer gets a consistent shape regardless of source.
  */
 function normalizeCorridorRiskState(raw: unknown): CorridorRiskState | null {
   if (!raw || typeof raw !== "object") return null;
@@ -23,14 +18,12 @@ function normalizeCorridorRiskState(raw: unknown): CorridorRiskState | null {
   const normalizedCorridors: Record<string, CorridorDetail> = {};
   for (const [name, value] of Object.entries(rawCorridors)) {
     if (typeof value === "number") {
-      // Agent 3 broadcast shape — raw float, no status/trend info available
       normalizedCorridors[name] = {
         risk_score: value,
         status: value > 0.65 ? "CRISIS" : value > 0.30 ? "WATCH" : "NORMAL",
         trend: "stable",
       };
     } else if (value && typeof value === "object" && "risk_score" in value) {
-      // REST endpoint shape — already correct
       normalizedCorridors[name] = value as CorridorDetail;
     }
   }
@@ -72,9 +65,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const normalizedType = (event.type as string).toUpperCase();
 
     switch (normalizedType) {
-      case "CONNECTED":
-        // Initial handshake confirmation from backend on socket open — no-op
-        break;
       case "RISK_STATE_UPDATED": {
         const normalized = normalizeCorridorRiskState(event.data);
         if (normalized) setRiskState(normalized);
@@ -135,10 +125,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     if (justConnected) {
       import("../api/endpoints").then(({ getRiskState }) => {
-        getRiskState().then((raw) => {
-          const normalized = normalizeCorridorRiskState(raw);
-          if (normalized) setRiskState(normalized);
-        }).catch(() => {
+        getRiskState().then(setRiskState).catch(() => {
           // Non-fatal — next WebSocket broadcast will still correct it
         });
       });

@@ -124,7 +124,6 @@ export interface AgentsStatusResponse {
   system_mode: "NORMAL" | "WATCH" | "CRISIS";
 }
 export type WebSocketEventType =
-  | "connected"   // initial handshake confirmation sent by backend on connect — no-op on frontend
   | "RISK_STATE_UPDATED"
   | "WATCH_ALERT"
   | "CONFIRMED_ALERT"

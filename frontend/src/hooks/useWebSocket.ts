@@ -7,15 +7,9 @@ export const useWebSocket = (onEvent: (event: WebSocketEvent) => void) => {
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   // Always call the LATEST onEvent without the socket lifecycle depending
-  // on its identity. Previously `connect` depended on `onEvent` and the
-  // mount effect depended on `connect` — so every time the parent
-  // component re-rendered and `onEvent` got a new function reference
-  // (e.g. AppContext's handleWsEvent, which is recreated whenever its
-  // own dependencies change), the effect's cleanup fired and closed the
-  // socket mid-handshake, then immediately reopened a new one. Confirmed
-  // in DevTools: "WebSocket is closed before the connection is
-  // established" firing repeatedly. Using a ref here decouples "which
-  // callback runs on message" from "when does the socket get torn down."
+  // on its identity — prevents the socket from being torn down/rebuilt on
+  // every parent re-render (confirmed cause of "WebSocket is closed before
+  // the connection is established" firing repeatedly).
   const onEventRef = useRef(onEvent);
   useEffect(() => {
     onEventRef.current = onEvent;
@@ -42,10 +36,8 @@ export const useWebSocket = (onEvent: (event: WebSocketEvent) => void) => {
       reconnectTimer.current = setTimeout(connect, 3000);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);   // stable — no longer depends on onEvent
+  }, []);
 
-  // Mount once. Connect once. Do not tear down/rebuild the socket just
-  // because a parent re-rendered and handed us a new onEvent reference.
   useEffect(() => {
     connect();
     return () => {
@@ -53,7 +45,7 @@ export const useWebSocket = (onEvent: (event: WebSocketEvent) => void) => {
       ws.current?.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);   // stable — runs once on mount, cleans up once on unmount
+  }, []);
 
   return { connected };
 };

@@ -132,14 +132,22 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({
 
   const [graphData, setGraphData] = useState<KGraphData | null>(null);
   const [loading, setLoading]     = useState(true);
+  const [fetchError, setFetchError] = useState(false);
   const [selectedNode, setSelectedNode] = useState<KNode | null>(null);
 
-  // Fetch graph data
+  // Fetch graph data — was previously unhandled, crashing the whole app
+  // with an uncaught AxiosError when backend is unreachable.
   useEffect(() => {
-    getKGraph().then((data) => {
-      setGraphData(data);
-      setLoading(false);
-    });
+    getKGraph()
+      .then((data) => {
+        setGraphData(data);
+        setLoading(false);
+        setFetchError(false);
+      })
+      .catch(() => {
+        setLoading(false);
+        setFetchError(true);
+      });
   }, []);
 
   // Build D3 simulation
@@ -395,6 +403,10 @@ const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({
               </svg>
               <p className="text-slate-500 text-xs">Building graph…</p>
             </div>
+          </div>
+        ) : fetchError ? (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <p className="text-red-400 text-xs">Unable to load graph — backend unreachable</p>
           </div>
         ) : (
           <svg ref={svgRef} className="w-full h-full" />
