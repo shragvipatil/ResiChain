@@ -106,6 +106,20 @@ async def run_agent4(state: Dict[str, Any]) -> Dict[str, Any]:
     risk_vector = state.get("risk_vector")
     if not risk_vector:
         risk_vector = await _get_risk_vector()
+    else:
+        # Day 18 fix: risk_vector reused from state (e.g. passed directly
+        # via /api/crisis/trigger) was NOT going through the same
+        # _is_numeric_score filter that _get_risk_vector() applies when
+        # fetching fresh from Redis. risk:state's real shape includes
+        # non-numeric keys (updated_at: str, updated_corridors: list) —
+        # _analyze()'s `score >= CRISIS_THRESHOLD` comparison crashed with
+        # a TypeError on those when they slipped through this branch.
+        # Filtering here too means BOTH paths are protected identically,
+        # instead of relying on the caller to have pre-filtered state.
+        risk_vector = {
+            k: v for k, v in risk_vector.items()
+            if _is_numeric_score(v)
+        }
 
     result = _analyze(risk_vector)
 
