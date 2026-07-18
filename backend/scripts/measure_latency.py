@@ -1,137 +1,158 @@
 """
 backend/scripts/measure_latency.py
 
-Day 14, Task 1 — pipeline latency measurement.
+Day 19, Person A — performance testing across 10 trials.
 
-Reads the timing rows that crisis_graph.py's _timed() wrapper already
-persists to the Postgres `agent_runs` table (node_name, started_at,
-ended_at, duration_ms), and reports per-node averages plus total
-end-to-end pipeline time across the most recent N trials.
+Extends the Day-14 version: adds standard deviation per node (to spot
+high-variance agents — usually Gemini network latency or Neo4j query
+plan changes) and the actual Day-19 milestone check: signal-to-playbook
+under 3 minutes in at least 9 of 10 runs (not just "average is fine").
 
-Usage (after triggering the crisis graph 5 times):
-    docker-compose exec fastapi python scripts/measure_latency.py
-    docker-compose exec fastapi python scripts/measure_latency.py --trials 5
+Groups agent_runs rows into individual TRIALS (not just per-node
+buckets) using the fact that "agent4" always starts a new trial in
+PIPELINE_NODES' execution order — this lets us compute each trial's
+real wall-clock signal-to-playbook time (last node's ended_at minus
+first node's started_at), which is what the 9-of-10 check needs.
 
-This does NOT trigger the graph itself — trigger it 5 times first
-(see the PowerShell loop in the Day-14 runbook), then run this to
-crunch the numbers. Keeping measurement separate from triggering means
-you can re-analyze without re-running, and the numbers come straight
-from the same instrumentation the app uses in production.
-
-Milestone check: total pipeline time must be < 180 s (3 minutes).
+Usage (after triggering the crisis graph 10 times):
+    docker-compose exec fastapi python scripts/measure_latency.py --trials 10
 """
 
 from __future__ import annotations
 
 import argparse
+import statistics
 import sys
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from db.postgres_queries import get_connection
 
-# The 5 crisis-graph nodes, in pipeline execution order, as written by
-# crisis_graph.py's workflow.add_node("<name>", _timed("<name>", ...)) calls.
 PIPELINE_NODES = ["agent4", "agent5_first", "agent6", "agent5_second", "agent8"]
-
 TARGET_SECONDS = 180  # 3-minute milestone
+MIN_PASS_FRACTION = 0.9  # at least 9 of 10 runs
 
 
-def fetch_recent_runs(trials: int) -> dict[str, list[int]]:
-    """
-    Pull the most recent (trials x len(PIPELINE_NODES)) rows from
-    agent_runs and bucket duration_ms by node_name.
-
-    We over-fetch a little and then take the last `trials` samples per
-    node, so a partial/failed run in the middle doesn't skew the window.
-    """
-    limit = trials * len(PIPELINE_NODES) * 2  # headroom for partial runs
-
-    per_node: dict[str, list[int]] = {node: [] for node in PIPELINE_NODES}
-
+def fetch_rows(trials: int):
+    """Pull enough recent rows to reconstruct `trials` full runs."""
+    limit = trials * len(PIPELINE_NODES) * 3  # headroom for partial/failed runs
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT node_name, duration_ms, started_at
+                SELECT node_name, duration_ms, started_at, ended_at
                 FROM agent_runs
-                ORDER BY started_at DESC
+                ORDER BY started_at ASC
                 LIMIT %s
                 """,
                 (limit,),
             )
-            rows = cur.fetchall()
+            return cur.fetchall()
 
-    # rows are newest-first; collect up to `trials` per node
+
+def group_into_trials(rows) -> list[dict]:
+    """
+    Groups rows (already sorted by started_at ASC) into trials. A new
+    trial starts every time we see "agent4" — it's always the first
+    node in PIPELINE_NODES' execution order, so it's a reliable trial
+    boundary without needing a dedicated run_id column.
+    """
+    trials = []
+    current = None
     for row in rows:
-        node = row["node_name"]
-        if node in per_node and len(per_node[node]) < trials:
-            per_node[node].append(row["duration_ms"])
+        if row["node_name"] == "agent4":
+            if current:
+                trials.append(current)
+            current = {"nodes": {}}
+        if current is None:
+            continue  # rows before the first agent4 — ignore
+        current["nodes"][row["node_name"]] = row
+    if current:
+        trials.append(current)
+    return trials
 
-    return per_node
 
+def analyze(trials: list[dict], requested: int):
+    # Keep only the most recent `requested` COMPLETE trials (all 5 nodes present).
+    complete = [t for t in trials if all(n in t["nodes"] for n in PIPELINE_NODES)]
+    complete = complete[-requested:]
 
-def report(per_node: dict[str, list[int]], trials: int) -> int:
-    print(f"\n{'='*60}")
-    print(f"  PIPELINE LATENCY — last {trials} trials per node")
-    print(f"{'='*60}")
-    print(f"  {'node':<16}{'samples':<9}{'avg ms':<10}{'min':<8}{'max':<8}")
-    print(f"  {'-'*54}")
+    print(f"\n{'='*66}")
+    print(f"  DAY 19 — PIPELINE PERFORMANCE ({len(complete)} of {requested} "
+          f"requested trials complete)")
+    print(f"{'='*66}")
 
-    total_avg_ms = 0.0
-    incomplete = False
-
-    for node in PIPELINE_NODES:
-        samples = per_node.get(node, [])
-        if not samples:
-            print(f"  {node:<16}{'0':<9}{'NO DATA':<10}")
-            incomplete = True
-            continue
-        avg = sum(samples) / len(samples)
-        total_avg_ms += avg
-        print(
-            f"  {node:<16}{len(samples):<9}{avg:<10.1f}"
-            f"{min(samples):<8}{max(samples):<8}"
-        )
-
-    print(f"  {'-'*54}")
-    total_s = total_avg_ms / 1000.0
-    print(f"  {'TOTAL (avg)':<16}{'':<9}{total_avg_ms:<10.1f}({total_s:.3f} s)")
-    print(f"{'='*60}")
-
-    if incomplete:
-        print("\n  WARNING: some nodes have no timing data. Did the crisis")
-        print("  graph actually run? Trigger it, then re-run this script.")
+    if not complete:
+        print("  No complete trials found. Trigger the crisis graph and retry.")
         return 1
 
-    print(f"\n  Milestone target: < {TARGET_SECONDS} s (3 minutes)")
-    if total_s < TARGET_SECONDS:
-        margin = TARGET_SECONDS / total_s if total_s > 0 else float("inf")
-        print(f"  RESULT: PASS — {total_s:.3f} s, ~{margin:.0f}x under budget.")
-        # Point at the slowest node factually, without prescribing a fix.
-        slowest = max(
-            PIPELINE_NODES,
-            key=lambda n: (sum(per_node[n]) / len(per_node[n])) if per_node[n] else 0,
-        )
-        slow_avg = sum(per_node[slowest]) / len(per_node[slowest])
-        print(f"  Slowest node: {slowest} ({slow_avg:.0f} ms avg) — "
-              f"informational only; no optimization needed under budget.")
-        return 0
+    # ---- Per-node avg / stddev / variance flag ----
+    print(f"\n  {'node':<16}{'avg ms':<10}{'stdev':<10}{'min':<8}{'max':<8}{'note'}")
+    print(f"  {'-'*60}")
+    per_node_durations = {node: [] for node in PIPELINE_NODES}
+    for t in complete:
+        for node in PIPELINE_NODES:
+            per_node_durations[node].append(t["nodes"][node]["duration_ms"])
 
-    print(f"  RESULT: FAIL — {total_s:.3f} s exceeds the {TARGET_SECONDS}s target.")
-    print("  Investigate the slowest node above before optimizing anything.")
-    return 1
+    high_variance_nodes = []
+    for node in PIPELINE_NODES:
+        vals = per_node_durations[node]
+        avg = statistics.mean(vals)
+        sd = statistics.stdev(vals) if len(vals) > 1 else 0.0
+        # Flag high variance: stdev > 40% of the mean (rule of thumb for
+        # "sometimes fast, sometimes slow" rather than genuine noise).
+        flag = ""
+        if avg > 0 and sd / avg > 0.4:
+            flag = "HIGH VARIANCE"
+            high_variance_nodes.append(node)
+        print(f"  {node:<16}{avg:<10.1f}{sd:<10.1f}{min(vals):<8}{max(vals):<8}{flag}")
+
+    # ---- Per-trial real wall-clock signal-to-playbook ----
+    print(f"\n  {'-'*60}")
+    print(f"  {'trial':<8}{'signal_to_playbook_s':<24}{'status'}")
+    pass_count = 0
+    trial_seconds = []
+    for i, t in enumerate(complete, 1):
+        first_start = t["nodes"]["agent4"]["started_at"]
+        last_end = t["nodes"]["agent8"]["ended_at"]
+        wall_s = (last_end - first_start).total_seconds()
+        trial_seconds.append(wall_s)
+        ok = wall_s < TARGET_SECONDS
+        pass_count += 1 if ok else 0
+        print(f"  {i:<8}{wall_s:<24.3f}{'OK' if ok else 'OVER TARGET'}")
+
+    print(f"  {'-'*60}")
+    avg_total = statistics.mean(trial_seconds)
+    sd_total = statistics.stdev(trial_seconds) if len(trial_seconds) > 1 else 0.0
+    print(f"  avg signal-to-playbook: {avg_total:.3f}s  (stdev {sd_total:.3f}s)")
+
+    fraction_passing = pass_count / len(complete)
+    print(f"\n  Milestone: signal-to-playbook < {TARGET_SECONDS}s in >= "
+          f"{MIN_PASS_FRACTION*100:.0f}% of runs")
+    print(f"  RESULT: {pass_count}/{len(complete)} runs under target "
+          f"({fraction_passing*100:.0f}%)")
+
+    if high_variance_nodes:
+        print(f"\n  HIGH-VARIANCE NODE(S): {', '.join(high_variance_nodes)}")
+        print("  Usual culprits: Gemini API network latency (agent5 calls out"
+              " to an LLM), or a Neo4j query plan cache miss (agent6's graph"
+              " queries). Not necessarily a bug — informational for the report.")
+
+    overall_ok = fraction_passing >= MIN_PASS_FRACTION
+    print(f"\n  OVERALL: {'PASS' if overall_ok else 'FAIL'}")
+    return 0 if overall_ok else 1
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Measure crisis-pipeline latency.")
-    parser.add_argument("--trials", type=int, default=5,
-                        help="How many recent trials to average (default 5).")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--trials", type=int, default=10)
     args = parser.parse_args()
 
-    per_node = fetch_recent_runs(args.trials)
-    return report(per_node, args.trials)
+    rows = fetch_rows(args.trials)
+    trials = group_into_trials(rows)
+    return analyze(trials, args.trials)
 
 
 if __name__ == "__main__":
