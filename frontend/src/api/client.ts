@@ -26,6 +26,14 @@ export const USE_MOCK = false;
 // login independently of the main USE_MOCK flag so role-based routing still
 // works while every other endpoint hits the real running backend.
 export const AUTH_USE_MOCK = true;
+// Refinery endpoints (/refinery/grades, /refinery/tanker-etas, etc.) are not
+// built on the real backend — confirmed 404 on all four via live audit.
+// Keep Refinery on mock data independently of the main USE_MOCK flag.
+export const REFINERY_USE_MOCK = true;
+// Admin system health endpoint (/admin/system-health) is not built on the
+// real backend — confirmed via live audit against backend/routers/api.py.
+// Keep Admin dashboard on mock data independently of the main USE_MOCK flag.
+export const ADMIN_USE_MOCK = true;
 
 export const apiClient = axios.create({
   baseURL: "http://localhost:8000/api",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -11,11 +12,21 @@ from agents.simulation import run_all as run_simulation
 from db.postgres_queries import insert_playbook
 from db.redis_client import get_redis
 
-
 logger = logging.getLogger(__name__)
 
 DEFAULT_DAILY_CONSUMPTION_MBD = 5.1
 SPR_HORIZON_DAYS = 30
+
+# Two intentionally distinct thresholds (see fixes_applied.md):
+# - CRISIS_THRESHOLD (0.65): corridor is in full crisis, counts toward
+#   Agent 4's compound-event detection.
+# - ROUTE_SURVIVAL_THRESHOLD (0.40): corridor is too risky for NEW
+#   procurement, even if not yet in full crisis. Agent 6 uses this to
+#   decide blocked_chokepoints for routing purposes.
+# Both read from .env so there's a single canonical source, no magic
+# numbers duplicated across agents.
+CRISIS_THRESHOLD: float = float(os.getenv("CRISIS_THRESHOLD", "0.65"))
+ROUTE_SURVIVAL_THRESHOLD: float = float(os.getenv("ROUTE_SURVIVAL_THRESHOLD", "0.40"))
 
 _FULL_TO_SHORT = {full: short for short, full in CHOKEPOINT_SHORT_TO_FULL.items()}
 
@@ -44,6 +55,10 @@ async def run_agent8(
       end-to-end. closure_severity accepts either a single float
       (applied uniformly to all chokepoints) or a Dict[str, float]
       (per-chokepoint severity, required for accurate compound math).
+    - procurement_view now includes a threshold_explainer so a
+      chokepoint that's blocked for procurement (>= 0.40) but not yet
+      classified as a compound crisis (< 0.65) is explained explicitly
+      instead of looking like an inconsistency between agents.
     """
     logger.info("Agent 8: starting playbook generation for %s", affected_chokepoints)
 
@@ -109,6 +124,12 @@ async def run_agent8(
     # ------------------------------------------------------------
     # Step 4 — Build views
     # ------------------------------------------------------------
+    # threshold_explainer needs the ORIGINAL live risk:state snapshot
+    # (short-name keys like "Hormuz", "Red_Sea") because that's the
+    # same key space blocked_chokepoints from Agent 6 uses. Using the
+    # scenario-injected/normalized_severity dict here would risk a
+    # key-space mismatch (full names vs short names) and silently
+    # produce zero explainer lines.
     ministry_view = _build_ministry_view(
         affected_chokepoints=affected_chokepoints,
         closure_severity=closure_severity,
@@ -116,7 +137,10 @@ async def run_agent8(
         spr_result=spr_result,
         procurement_result=procurement_result,
     )
-    procurement_view = _build_procurement_view(procurement_result)
+    procurement_view = _build_procurement_view(
+        procurement_result,
+        risk_vector=original_risk_state or {},
+    )
     refinery_view = _build_refinery_view(simulation_result)
 
     overall_confidence = _combine_confidence(spr_result.get("confidence", 0.0), procurement_result)
@@ -174,7 +198,6 @@ async def run_agent8(
 # ------------------------------------------------------------
 # Scenario state injection (non-destructive)
 # ------------------------------------------------------------
-
 
 async def _snapshot_risk_state() -> Optional[Dict[str, Any]]:
     try:
@@ -235,7 +258,6 @@ async def _restore_risk_state(original_state: Optional[Dict[str, Any]]) -> None:
 # ------------------------------------------------------------
 # Supplier-risk derivation (root-cause fix for simulation)
 # ------------------------------------------------------------
-
 
 def _build_supplier_route_risks(affected_chokepoints: List[str], closure_severity: Any) -> list:
     """
@@ -307,9 +329,49 @@ def _build_supplier_route_risks(affected_chokepoints: List[str], closure_severit
 
 
 # ------------------------------------------------------------
-# View builders
+# Threshold explainer (Fix — dual-threshold narrative consistency)
 # ------------------------------------------------------------
 
+def _build_threshold_explainer(
+    blocked_chokepoints: List[str],
+    risk_vector: Dict[str, Any],
+) -> List[str]:
+    """
+    Explains why a chokepoint is excluded from new procurement
+    (ROUTE_SURVIVAL_THRESHOLD, 0.40) even when it hasn't been
+    classified as a full compound-crisis event yet
+    (CRISIS_THRESHOLD, 0.65). Prevents the two-threshold design from
+    reading as an inconsistency in the dashboard/demo.
+
+    risk_vector is expected in short-name key space (e.g. "Hormuz",
+    "Red_Sea"), matching what blocked_chokepoints already uses and
+    what Agent 6's get_blocked_chokepoints() reads from risk:state.
+    Non-numeric entries (e.g. "updated_at", "updated_corridors") are
+    skipped defensively.
+    """
+    explainers: List[str] = []
+    for cp in blocked_chokepoints:
+        severity = risk_vector.get(cp)
+        if not isinstance(severity, (int, float)) or isinstance(severity, bool):
+            continue
+
+        if severity >= CRISIS_THRESHOLD:
+            explainers.append(
+                f"{cp} excluded from procurement AND classified as full crisis "
+                f"({severity:.2f} >= {CRISIS_THRESHOLD:.2f})."
+            )
+        elif severity >= ROUTE_SURVIVAL_THRESHOLD:
+            explainers.append(
+                f"{cp} excluded from new procurement ({severity:.2f} > "
+                f"{ROUTE_SURVIVAL_THRESHOLD:.2f} route-survival threshold) but "
+                f"not yet a compound crisis event (< {CRISIS_THRESHOLD:.2f})."
+            )
+    return explainers
+
+
+# ------------------------------------------------------------
+# View builders
+# ------------------------------------------------------------
 
 def _build_ministry_view(affected_chokepoints, closure_severity, simulation_result, spr_result, procurement_result):
     disruption = simulation_result.get("disruption", {})
@@ -339,9 +401,13 @@ def _build_ministry_view(affected_chokepoints, closure_severity, simulation_resu
     }
 
 
-def _build_procurement_view(procurement_result):
+def _build_procurement_view(
+    procurement_result: Dict[str, Any],
+    risk_vector: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     ranked = procurement_result.get("ranked_options", [])
     blocked_trace = [r for r in procurement_result.get("full_rejection_trace", []) if r.get("status") == "BLOCKED"]
+    blocked_chokepoints = procurement_result.get("blocked_chokepoints", [])
 
     return {
         "evaluated_count": procurement_result.get("evaluated_count", 0),
@@ -353,7 +419,8 @@ def _build_procurement_view(procurement_result):
             {"supplier": b.get("supplier"), "rule": (b.get("reason") or {}).get("rule")}
             for b in blocked_trace[:10]
         ],
-        "blocked_chokepoints": procurement_result.get("blocked_chokepoints", []),
+        "blocked_chokepoints": blocked_chokepoints,
+        "threshold_explainer": _build_threshold_explainer(blocked_chokepoints, risk_vector or {}),
     }
 
 
