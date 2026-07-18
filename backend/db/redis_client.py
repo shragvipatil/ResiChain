@@ -11,6 +11,9 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 
 import redis.asyncio as aioredis
+import redis.exceptions as _rex
+from redis.asyncio.retry import Retry
+from redis.backoff import ExponentialBackoff
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +54,19 @@ async def get_redis() -> aioredis.Redis:
         _redis_client = aioredis.from_url(
             os.getenv("REDIS_URL", "redis://redis:6379"),
             decode_responses=True,
+            # Day 17 resilience: transparently survive a momentary Redis drop
+            # instead of surfacing an unhandled ConnectionError to the caller.
+            #   - health_check_interval: ping the socket every 30s so a
+            #     half-dead connection is detected and replaced before use.
+            #   - socket_keepalive: OS-level keepalive on the TCP socket.
+            #   - retry_on_timeout + retry: re-issue a command up to 3 times
+            #     with exponential backoff on a connection/timeout error.
+            # A brief Redis blip during the demo now recovers silently.
+            health_check_interval=30,
+            socket_keepalive=True,
+            retry_on_timeout=True,
+            retry=Retry(ExponentialBackoff(cap=2, base=0.1), retries=3),
+            retry_on_error=[_rex.ConnectionError, _rex.TimeoutError],
         )
     return _redis_client
 
@@ -292,4 +308,4 @@ async def is_token_blacklisted(jti: str) -> bool:
     Checks if a JWT token has been revoked.
     """
     r = await get_redis()
-    return (await r.exists(f"blacklist:{jti}")) > 0
+    return (await r.exists(f"blacklist:{jti}")) > 0 
