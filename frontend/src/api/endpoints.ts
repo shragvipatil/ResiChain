@@ -1,4 +1,4 @@
-import { USE_MOCK, AUTH_USE_MOCK, apiClient } from "./client";
+import { USE_MOCK, AUTH_USE_MOCK, REFINERY_USE_MOCK, ADMIN_USE_MOCK, apiClient } from "./client";
 import {
   mockRiskState, mockProcurement,
   mockPrices, mockAgentStatus, mockVessels, mockPlaybook,
@@ -394,25 +394,25 @@ const MOCK_DELIVERY_SCHEDULE: DeliveryScheduleDay[] = Array.from({ length: 14 })
 });
 
 export const getRefineryGrades = async (): Promise<RefineryGradeInfo[]> => {
-  if (USE_MOCK) { await delay(300); return MOCK_REFINERY_GRADES; }
+  if (REFINERY_USE_MOCK) { await delay(300); return MOCK_REFINERY_GRADES; }
   const res = await apiClient.get("/refinery/grades");
   return res.data;
 };
 
 export const getTankerETAs = async (): Promise<TankerETA[]> => {
-  if (USE_MOCK) { await delay(300); return MOCK_TANKER_ETAS; }
+  if (REFINERY_USE_MOCK) { await delay(300); return MOCK_TANKER_ETAS; }
   const res = await apiClient.get("/refinery/tanker-etas");
   return res.data;
 };
 
 export const getGradeSwitchOptions = async (): Promise<GradeSwitchOption[]> => {
-  if (USE_MOCK) { await delay(300); return MOCK_GRADE_SWITCHES; }
+  if (REFINERY_USE_MOCK) { await delay(300); return MOCK_GRADE_SWITCHES; }
   const res = await apiClient.get("/refinery/grade-switches");
   return res.data;
 };
 
 export const getDeliverySchedule = async (): Promise<DeliveryScheduleDay[]> => {
-  if (USE_MOCK) { await delay(300); return MOCK_DELIVERY_SCHEDULE; }
+  if (REFINERY_USE_MOCK) { await delay(300); return MOCK_DELIVERY_SCHEDULE; }
   const res = await apiClient.get("/refinery/delivery-schedule");
   return res.data;
 };
@@ -420,7 +420,7 @@ export const getDeliverySchedule = async (): Promise<DeliveryScheduleDay[]> => {
 // ── Admin System Health endpoint (Day 12) ─────────────────────────────────────
 
 export const getSystemHealth = async (): Promise<SystemHealth> => {
-  if (USE_MOCK) {
+  if (ADMIN_USE_MOCK) {
     await delay(300);
     return {
       agents: {
