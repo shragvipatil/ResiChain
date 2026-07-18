@@ -20,6 +20,12 @@
 #     when Agent 7 isn't available.
 #
 # Chokepoint naming and route-name-parsing fixes (from earlier) unchanged.
+#
+# Day 18: RISK_SURVIVAL_THRESHOLD now reads from .env; deploy-day stopgap
+# that wrapped the real validator call in a try/except (to survive
+# agent7.py's NameError) has been REMOVED now that Person B's real fix
+# to agent7.py is confirmed working — _get_batch_validator() is back to
+# its clean pre-stopgap form below.
 # ============================================================
 
 import os 
@@ -44,7 +50,7 @@ RISK_SURVIVAL_THRESHOLD = float(os.getenv("ROUTE_SURVIVAL_THRESHOLD", "0.40"))
 # constant, and is deliberately DIFFERENT from Agent 4's CRISIS_THRESHOLD
 # (0.65) — this is the procurement-caution threshold ("don't route new
 # cargo here"), not the crisis/compound-detection threshold ("this
-# corridor is in crisis"). Aligned with Person B, see fixes_applied.md. 
+# corridor is in crisis"). Aligned with Person B, see fixes_applied.md.
 
 
 def _is_numeric_score(value) -> bool:
@@ -501,6 +507,11 @@ async def _get_batch_validator():
     ownership boundary (Agent 6: candidate generation + ranking;
     validator: validation state + audit persistence) regardless of
     which validator actually executes.
+
+    Day 18 note: a temporary try/except stopgap briefly wrapped the
+    real call here during a live agent7.py NameError incident. Removed
+    now that Person B's real fix is confirmed working — this is the
+    clean, permanent form.
     """
     try:
         from agents.agent7 import validate_batch as sync_validate_batch
