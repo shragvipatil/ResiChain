@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
 from uuid import UUID
@@ -254,18 +255,65 @@ def upsert_ofac_entry(
 
 
 def check_ofac_match(supplier_name: str) -> bool:
+    """
+    Returns True only if supplier_name appears as a distinct whole-word
+    token inside entity_name or aliases -- not as a raw substring hit.
+
+    BUG FIX (Item 4 / Russia false-positive):
+    Previous version used ILIKE '%supplier_name%', which matches ANY
+    SDN row that merely CONTAINS the country name anywhere in its text
+    (e.g. an address field like "..., Moscow, Russia" or a descriptive
+    alias). That caused country names like "Russia" to match entities
+    that have nothing to do with an actual country-level sanction,
+    while OFAC only lists specific individuals/entities/vessels, never
+    a bare country as an SDN entity.
+
+    Using a word-boundary anchored regex (~*) ensures "Russia" only
+    matches when it is a standalone token, not embedded substring text.
+    This does not change behavior for genuinely sanctioned entities
+    whose full name IS the match target (e.g. "Islamic Republic of
+    Iran" is itself a listed SDN entity, so word-boundary matching
+    still correctly flags it).
+    """
+    if not supplier_name or not supplier_name.strip():
+        return False
+
+    escaped = re.escape(supplier_name.strip())
+    pattern = rf"\y{escaped}\y"
+
     sql = """
         SELECT 1
         FROM ofac_sdn
-        WHERE entity_name ILIKE %(pattern)s
-           OR aliases ILIKE %(pattern)s
+        WHERE entity_name ~* %(pattern)s
+           OR aliases ~* %(pattern)s
         LIMIT 1
     """
-    pattern = f"%{supplier_name}%"
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(sql, {"pattern": pattern})
             return cur.fetchone() is not None
+
+# db/postgres_queries.py — add alongside check_ofac_match
+
+COMPREHENSIVE_SANCTIONS_COUNTRIES = {
+    "iran", "islamic republic of iran",
+    "north korea", "democratic people's republic of korea", "dprk",
+    "cuba",
+    "syria", "syrian arab republic",
+}
+
+def is_comprehensively_sanctioned_country(country_name: str) -> bool:
+    """
+    True only for countries under blanket US comprehensive sanctions
+    programs (embargoes) — distinct from check_ofac_match, which
+    matches specific SDN entities/individuals/banks.
+
+    This does NOT check the SDN entity table, because entity name
+    matching incorrectly flags countries like Russia (which has
+    sanctioned entities like Central Bank of Russia, but is not
+    itself comprehensively embargoed for crude oil imports).
+    """
+    return country_name.strip().lower() in COMPREHENSIVE_SANCTIONS_COUNTRIES
 
 
 def insert_playbook(

@@ -135,15 +135,25 @@ def _result(
     return payload
 
 
-def _layer1_sanctions(candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def layer1_sanctions(candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     supplier = candidate["supplier"]
-    try:
-        match = check_ofac_match(supplier)
-    except Exception as exc:
-        return _reason("OFAC_SDN_CHECK_FAILED", str(exc), None, "ofac_sdn")
 
-    if match:
-        return _reason("OFAC_SDN", supplier, None, "ofac_sdn")
+    # Country-level embargo check first (Iran, North Korea, Cuba, Syria)
+    if is_comprehensively_sanctioned_country(supplier):
+        return reason("OFAC_SDN", supplier, None, "ofac.treasury.gov - comprehensive sanctions program")
+
+    # Entity-level SDN check for specific named counterparties only
+    # (not run against bare country names — avoids false positives like
+    # "Russia" matching "Bank of Russia")
+    counterparty = candidate.get("counterparty_entity")  # specific company/bank name, if any
+    if counterparty:
+        try:
+            match = check_ofac_match(counterparty)
+        except Exception as exc:
+            return reason("OFAC_SDN_CHECK_FAILED", str(exc), None, "ofac_sdn")
+        if match:
+            return reason("OFAC_SDN", counterparty, None, "ofac_sdn")
+
     return None
 
 
