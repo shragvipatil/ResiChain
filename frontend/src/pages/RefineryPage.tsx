@@ -208,6 +208,7 @@ const RefineryPage: React.FC = () => {
   const [switches, setSwitches] = useState<GradeSwitchOption[]>([]);
   const [schedule, setSchedule] = useState<DeliveryScheduleDay[]>([]);
   const [loading, setLoading]   = useState(true);
+  const [loadError, setLoadError] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -215,6 +216,13 @@ const RefineryPage: React.FC = () => {
     ]).then(([g, t, s, sch]) => {
       setGrades(g); setTankers(t); setSwitches(s); setSchedule(sch);
       setLoading(false);
+    }).catch(() => {
+      // Outer safety net — the 4 functions above already fall back to
+      // mock data internally on failure, but this guards against the
+      // whole page crashing if that internal fallback is ever missing
+      // or something else in the chain throws unexpectedly.
+      setLoading(false);
+      setLoadError(true);
     });
   }, []);
 
@@ -229,6 +237,23 @@ const RefineryPage: React.FC = () => {
         {[1, 2, 3].map((i) => (
           <div key={i} className="h-40 bg-slate-800 rounded-xl border border-slate-700 animate-pulse" />
         ))}
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="min-h-screen bg-slate-900 p-8 flex items-center justify-center">
+        <div className="bg-slate-800 border border-red-800 rounded-xl p-6 max-w-md text-center">
+          <p className="text-red-400 text-sm font-medium mb-1">Unable to load refinery data</p>
+          <p className="text-slate-500 text-xs">Backend may be unreachable.</p>
+          <button
+            onClick={() => window.location.reload()}
+            className="mt-4 text-xs text-blue-400 hover:underline"
+          >
+            Retry
+          </button>
+        </div>
       </div>
     );
   }
