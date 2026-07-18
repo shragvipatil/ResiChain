@@ -12,6 +12,13 @@
 # whether the external APIs are reachable or not. When the demo cache
 # keys are absent (i.e. always, outside demo windows — they carry a 2h
 # TTL), behavior is exactly what it was before this fix.
+#
+# Day 17 (failure-mode hardening): when yfinance fails/times out,
+# fetch_live_prices no longer returns {} (which blanks the dashboard
+# price cards). It now falls back to the last cached price — first from
+# Redis prices:live, then from the Postgres price_history table
+# (populated by the Alpha Vantage daily job). Dashboard shows the last
+# known price instead of going blank.
 # ============================================================
 
 import json
@@ -20,7 +27,7 @@ import os
 import asyncio
 from datetime import datetime
 from db.redis_client import get_redis
-from db.postgres_queries import upsert_price_history
+from db.postgres_queries import upsert_price_history, get_latest_price_history
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +197,11 @@ async def fetch_live_prices() -> dict:
 
     Fix 13: checks prices:demo_cache first (pre-fetched real yfinance data);
     falls through to a live yfinance call when the cache is absent.
+
+    Day 17: if yfinance fails, falls back to the last cached price
+    (Redis prices:live, then Postgres price_history) instead of returning
+    an empty dict — so the dashboard shows the last known price rather
+    than blank cards.
     """
     try:
         r = await get_redis()
@@ -214,10 +226,66 @@ async def fetch_live_prices() -> dict:
                 prices = {}
 
         if not prices:
-            prices = await _fetch_prices_yfinance()
+            # A raised exception here (timeout, network error) must be
+            # treated the same as an empty return, so the cache fallback
+            # below always runs instead of the raise escaping to the outer
+            # except (which would blank the dashboard with {}).
+            try:
+                prices = await _fetch_prices_yfinance()
+            except Exception as yf_exc:
+                logger.warning(f"Price fetch: yfinance raised {yf_exc!r}")
+                prices = {}
 
         if not prices:
-            logger.warning("Price fetch: yfinance failed, using cached/default")
+            # Day 17 graceful degradation — yfinance is down. Do NOT return
+            # {} (that blanks the dashboard). Serve the last known price.
+            logger.warning("Price fetch: yfinance failed — trying cached fallbacks")
+
+            # Fallback 1: last good value still in Redis prices:live.
+            try:
+                last_live = await r.get("prices:live")
+                if last_live:
+                    logger.info(
+                        "Price fetch: served last cached prices:live (yfinance down)"
+                    )
+                    return json.loads(last_live)
+            except Exception:
+                pass
+
+            # Fallback 2: last daily row from Postgres price_history
+            # (populated by the Alpha Vantage daily job). This is the
+            # "use Alpha Vantage cached value from PostgreSQL" path.
+            try:
+                row = get_latest_price_history()
+                if row and row.get("brent_usd") is not None:
+                    logger.info(
+                        "Price fetch: served last price_history row from Postgres "
+                        "(yfinance down)"
+                    )
+                    result = {
+                        "brent": {
+                            "price": float(row["brent_usd"]),
+                            "change_pct": 0.0,
+                            "commodity": "Brent Crude",
+                            "unit": "USD/barrel",
+                        },
+                        "source": "postgres_cache",
+                    }
+                    if row.get("wti_usd") is not None:
+                        result["wti"] = {
+                            "price": float(row["wti_usd"]),
+                            "change_pct": 0.0,
+                            "commodity": "WTI Crude",
+                            "unit": "USD/barrel",
+                        }
+                    return result
+            except Exception as exc:
+                logger.warning(
+                    f"Price fetch: Postgres price_history fallback failed: {exc}"
+                )
+
+            # Nothing cached anywhere — empty as the true last resort.
+            logger.warning("Price fetch: no cached price available anywhere")
             return {}
 
         await r.setex(
