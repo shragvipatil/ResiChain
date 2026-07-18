@@ -158,6 +158,9 @@ def _analyze(risk_vector: Dict[str, float]) -> Dict[str, Any]:
     Core compound-risk calculation. Pure function, no I/O for the math
     itself — easy to unit test independently of Redis.
     """
+    risk_vector = {k: v for k, v in risk_vector.items() if _is_numeric_score(v)}
+
+    risk_vector = {k: v for k, v in risk_vector.items() if _is_numeric_score(v)}
     blocked = [
         corridor for corridor, score in risk_vector.items()
         if score >= CRISIS_THRESHOLD
