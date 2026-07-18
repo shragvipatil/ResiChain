@@ -22,7 +22,7 @@
 # Chokepoint naming and route-name-parsing fixes (from earlier) unchanged.
 # ============================================================
 
-
+import os 
 import asyncio
 import json
 import logging
@@ -39,7 +39,12 @@ from db.neo4j_queries import (
 logger = logging.getLogger(__name__)
 
 
-RISK_SURVIVAL_THRESHOLD = 0.40  # corridors at/above this are considered "blocked"
+RISK_SURVIVAL_THRESHOLD = float(os.getenv("ROUTE_SURVIVAL_THRESHOLD", "0.40"))
+# Day 18: reads from .env (ROUTE_SURVIVAL_THRESHOLD) instead of a hardcoded
+# constant, and is deliberately DIFFERENT from Agent 4's CRISIS_THRESHOLD
+# (0.65) — this is the procurement-caution threshold ("don't route new
+# cargo here"), not the crisis/compound-detection threshold ("this
+# corridor is in crisis"). Aligned with Person B, see fixes_applied.md. 
 
 
 def _is_numeric_score(value) -> bool:
