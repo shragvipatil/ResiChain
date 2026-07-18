@@ -56,14 +56,24 @@ def main():
     pprint(events)
 
     print_section("4) OFAC upsert + sanctions check")
+    # NOTE: uses a fake, non-country test entity so this smoke test never
+    # collides with real seeded OFAC data or plants a fake country-level
+    # row (see: Item 4 bug, "Islamic Republic of Iran" row from this exact
+    # script caused a false country-embargo match in production testing).
+    TEST_ENTITY = "ZZTEST Smoke Test Entity"
     upsert_ofac_entry(
-        entity_name="Islamic Republic of Iran",
-        aliases="Iran, Iranian Oil Co",
-        program="OFAC-SDN",
+        entity_name=TEST_ENTITY,
+        aliases="ZZTEST Alias Co",
+        program="OFAC-SDN-TEST",
         date_imposed="2024-01-01",
     )
-    print("check_ofac_match('Iran') ->", check_ofac_match("Iran"))
+    print("check_ofac_match('ZZTEST Smoke Test Entity') ->", check_ofac_match(TEST_ENTITY))
     print("check_ofac_match('Saudi Arabia') ->", check_ofac_match("Saudi Arabia"))
+
+    # Clean up immediately so this test entity never lingers in the real table
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM ofac_sdn WHERE entity_name = %s", (TEST_ENTITY,))
 
     print_section("5) Insert playbook")
     now_utc = datetime.now(timezone.utc)
