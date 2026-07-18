@@ -57,7 +57,7 @@ def _get_vessels_near_port(departure_port: str) -> int:
         vessels = json.loads(raw)
         count = 0
         for v in vessels:
-            if str(v.get("nearest_port", "")).strip().lower() == departure_port.strip().lower():
+            if str(v.get("destination", "")).strip().lower() == departure_port.strip().lower():
                 count += 1
         return count
     except Exception as exc:
