@@ -413,7 +413,35 @@ async def node_agent8(state: CrisisGraphState) -> dict:
     from agents.agent8 import run_agent8
     from agents.agent6 import CHOKEPOINT_SHORT_TO_FULL
 
+    # Day 18 fix (found by Person B, live-verified): a corridor between
+    # 0.40 (Agent 6's RISK_SURVIVAL_THRESHOLD) and 0.65 (Agent 4's
+    # CRISIS_THRESHOLD) — e.g. Red_Sea at 0.41 — makes Agent 6 correctly
+    # block/approve suppliers, but Agent 4 finds no COMPOUND event (needs
+    # >=1 corridor at/above 0.65), so blocked_chokepoints from Agent 4
+    # alone is empty. The old gate below only checked Agent 4's list,
+    # so Agent 8 refused to generate a playbook at all — every
+    # sub-crisis event between the two thresholds silently produced NO
+    # ministry-facing output, even though Agent 6 had already done real
+    # procurement work worth reporting.
+    #
+    # Fix: gate on the UNION of Agent 4's (compound/crisis) list and
+    # Agent 6's own procurement_result.blocked_chokepoints (route-survival
+    # sub-crisis list). Either one having a blocked corridor is enough to
+    # justify generating a playbook — they represent different severity
+    # thresholds, not different opinions about the same fact.
     blocked_short = state.get("blocked_chokepoints") or []
+    procurement_result = state.get("procurement_result") or {}
+    agent6_blocked = procurement_result.get("blocked_chokepoints") or []
+
+    if not blocked_short and agent6_blocked:
+        logger.info(
+            "Crisis graph: node_agent8 — Agent 4 found no compound event, "
+            "but Agent 6 blocked %s (sub-crisis, 0.40 threshold). Generating "
+            "a playbook for the sub-crisis case instead of refusing.",
+            agent6_blocked,
+        )
+        blocked_short = agent6_blocked
+
     risk_vector = state.get("risk_vector") or {}
 
     if not blocked_short:
