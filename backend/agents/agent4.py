@@ -158,9 +158,6 @@ def _analyze(risk_vector: Dict[str, float]) -> Dict[str, Any]:
     Core compound-risk calculation. Pure function, no I/O for the math
     itself — easy to unit test independently of Redis.
     """
-    risk_vector = {k: v for k, v in risk_vector.items() if _is_numeric_score(v)}
-
-    risk_vector = {k: v for k, v in risk_vector.items() if _is_numeric_score(v)}
     blocked = [
         corridor for corridor, score in risk_vector.items()
         if score >= CRISIS_THRESHOLD
@@ -168,16 +165,40 @@ def _analyze(risk_vector: Dict[str, float]) -> Dict[str, Any]:
 
     if len(blocked) < 2:
         # 0 or 1 corridor critical is a normal single-corridor crisis,
-        # not a compound event — Agent 4 has nothing to add here.
+        # not a compound event — Agent 4 still needs to report REAL
+        # surviving routes here, just queried against whichever single
+        # corridor (if any) is blocked, instead of the compound list.
+        #
+        # Bug (found by Person B, Day 18 end-to-end testing): this branch
+        # used to hardcode "surviving_routes": [] unconditionally, never
+        # calling get_surviving_routes(). crisis_graph.py feeds this
+        # empty list into Agent 5's first-pass import estimate, so
+        # total_imports_mb came out 0.0 even for a mild single-corridor
+        # event — falsely triggering the Fix 5 emergency-rationing
+        # fallback, while Agent 6 (querying Neo4j correctly, in
+        # parallel) found real approved routes seconds later on the
+        # same request. Agent 5's second pass self-corrects downstream
+        # using Agent 6's real approved cargoes, so this never crashed
+        # or reached the demo output — but it silently corrupted the
+        # first-pass numbers on the most common real-world case
+        # (single-corridor, not compound).
         logger.info(
             f"Agent 4: {len(blocked)} corridor(s) at/above {CRISIS_THRESHOLD} "
             f"— not a compound event"
         )
+
+        full_names = [CHOKEPOINT_SHORT_TO_FULL.get(c, c) for c in blocked]
+        try:
+            surviving_routes = get_surviving_routes(full_names) if full_names else []
+        except Exception as e:
+            logger.error(f"Agent 4: get_surviving_routes failed: {e}")
+            surviving_routes = []
+
         return {
             "compound_risk": None,
             "blocked_chokepoints": blocked,
             "is_compound_event": False,
-            "surviving_routes": [],
+            "surviving_routes": surviving_routes,
         }
 
     # compound_risk = 1 - Π(1 - risk_i)
