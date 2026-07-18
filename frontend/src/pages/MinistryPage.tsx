@@ -10,13 +10,13 @@
 import React, { useEffect, useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAppContext } from "../context/AppContext";
-import { useAuth } from "../context/AuthContext";
 import { getRiskState, getVessels } from "../api/endpoints";
 import { Vessel } from "../types";
 import ShippingMap from "../components/ShippingMap";
 import AgentStatusPanel from "../components/AgentStatusPanel";
 import RiskWeightSliders from "../components/RiskWeightSliders";
 import KnowledgeGraph from "../components/KnowledgeGraph";
+import AppLayout from "../components/AppLayout";
 
 const VESSEL_POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -27,14 +27,9 @@ const getRiskLabel = (risk: number) =>
   risk > 0.65 ? "CRITICAL" : risk > 0.30 ? "ELEVATED" : "NORMAL";
 
 const MinistryPage: React.FC = () => {
-  const { riskState, setRiskState, wsConnected, compoundDisruptionDetected } = useAppContext();
-  const { user, logout } = useAuth();
+  const { riskState, setRiskState, compoundDisruptionDetected } = useAppContext();
   const navigate = useNavigate();
 
-  const handleLogout = async () => {
-    await logout();
-    navigate("/login", { replace: true });
-  };
   const [vessels, setVessels] = useState<Vessel[]>([]);
   const [backendUnreachable, setBackendUnreachable] = useState(false);
   const pollRef = useRef<NodeJS.Timeout | null>(null);
@@ -63,12 +58,12 @@ const MinistryPage: React.FC = () => {
   }, []);
 
   return (
-    <div className="min-h-screen bg-slate-900 p-8">
-      {/* Header */}
+    <AppLayout>
+      {/* Page title + page-specific actions (nav/user/logout now live in AppHeader) */}
       <div className="mb-8 flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-medium text-white">National Command Center</h1>
-          <p className="text-slate-400 text-sm mt-1">ResiChain AI v2.0 — Energy Supply Chain Resilience</p>
+          <p className="text-slate-400 text-sm mt-1">ResiChain — Energy Supply Chain Resilience</p>
         </div>
         <div className="flex items-center gap-2 mt-1">
           <button
@@ -83,19 +78,6 @@ const MinistryPage: React.FC = () => {
               ⚠ COMPOUND DISRUPTION
             </span>
           )}
-          <div className="flex items-center gap-1.5">
-            <div className={`w-1.5 h-1.5 rounded-full ${wsConnected ? "bg-green-400 animate-pulse" : "bg-slate-600"}`} />
-            <span className="text-slate-500 text-xs">{wsConnected ? "Live" : "Mock data"}</span>
-          </div>
-          <div className="flex items-center gap-2 ml-2 pl-2 border-l border-slate-700">
-            <span className="text-slate-400 text-xs">{user?.name}</span>
-            <button
-              onClick={handleLogout}
-              className="text-slate-500 hover:text-red-400 text-xs transition-colors"
-            >
-              Logout
-            </button>
-          </div>
         </div>
       </div>
 
@@ -207,7 +189,7 @@ const MinistryPage: React.FC = () => {
           <p className="text-slate-600 text-xs">{vessels.length} vessels · refreshes every 5 min</p>
         )}
       </div>
-    </div>
+    </AppLayout>
   );
 };
 

@@ -11,8 +11,7 @@
  */
 
 import React, { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { useAuth } from "../context/AuthContext";
+import AppLayout from "../components/AppLayout";
 import { getSystemHealth } from "../api/endpoints";
 import { SystemHealth } from "../types";
 
@@ -156,50 +155,67 @@ const ExternalApiPanel: React.FC<{ apis: SystemHealth["external_apis"] }> = ({ a
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 const AdminPage: React.FC = () => {
-  const { user, logout } = useAuth();
-  const navigate = useNavigate();
   const [health, setHealth] = useState<SystemHealth | null>(null);
   const [loading, setLoading] = useState(true);
+  const [pollError, setPollError] = useState(false);
 
   useEffect(() => {
-    getSystemHealth().then((h) => { setHealth(h); setLoading(false); });
+    const load = () =>
+      getSystemHealth()
+        .then((h) => { setHealth(h); setLoading(false); setPollError(false); })
+        .catch(() => { setLoading(false); setPollError(true); });
+    load();
+    const interval = setInterval(load, 5000); // live poll — /agents/status has no WS event yet
+    return () => clearInterval(interval);
   }, []);
 
-  const handleLogout = async () => {
-    await logout();
-    navigate("/login", { replace: true });
-  };
-
-  if (loading || !health) {
+  if (loading && !health) {
     return (
-      <div className="min-h-screen bg-slate-900 p-8 space-y-4">
-        {[1, 2, 3].map((i) => (
-          <div key={i} className="h-40 bg-slate-800 rounded-xl border border-slate-700 animate-pulse" />
-        ))}
-      </div>
+      <AppLayout showRiskStrip={false}>
+        <div className="space-y-4">
+          {[1, 2, 3].map((i) => (
+            <div key={i} className="h-40 bg-slate-800 rounded-xl border border-slate-700 animate-pulse" />
+          ))}
+        </div>
+      </AppLayout>
     );
   }
 
+  if (pollError && !health) {
+    return (
+      <AppLayout showRiskStrip={false}>
+        <div className="flex items-center justify-center min-h-[60vh]">
+          <div className="bg-slate-800 border border-red-800 rounded-xl p-6 max-w-md text-center">
+            <p className="text-red-400 text-sm font-medium mb-1">Unable to load system health</p>
+            <p className="text-slate-500 text-xs">Backend may be unreachable.</p>
+            <button
+              onClick={() => window.location.reload()}
+              className="mt-4 text-xs text-blue-400 hover:underline"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      </AppLayout>
+    );
+  }
+
+  if (!health) return null;
+
   return (
-    <div className="min-h-screen bg-slate-900 p-8">
+    <AppLayout showRiskStrip={false}>
       <div className="mb-8 flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-medium text-white">System Health</h1>
           <p className="text-slate-400 text-sm mt-1">Admin — full pipeline and infrastructure status</p>
         </div>
-        <div className="flex items-center gap-3">
-          <span className={`text-xs px-2.5 py-1 rounded-lg border font-medium ${
-            health.crisis_mode_active
-              ? "bg-red-900/50 text-red-400 border-red-800 animate-pulse"
-              : "bg-green-900/50 text-green-400 border-green-800"
-          }`}>
-            {health.crisis_mode_active ? "CRISIS MODE ACTIVE" : "NOMINAL"}
-          </span>
-          <span className="text-slate-400 text-xs">{user?.name}</span>
-          <button onClick={handleLogout} className="text-slate-500 hover:text-red-400 text-xs transition-colors">
-            Logout
-          </button>
-        </div>
+        <span className={`text-xs px-2.5 py-1 rounded-lg border font-medium ${
+          health.crisis_mode_active
+            ? "bg-red-900/50 text-red-400 border-red-800 animate-pulse"
+            : "bg-green-900/50 text-green-400 border-green-800"
+        }`}>
+          {health.crisis_mode_active ? "CRISIS MODE ACTIVE" : "NOMINAL"}
+        </span>
       </div>
 
       <div className="grid grid-cols-2 gap-6 mb-6">
@@ -210,7 +226,7 @@ const AdminPage: React.FC = () => {
       <div className="mb-6">
         <ExternalApiPanel apis={health.external_apis} />
       </div>
-    </div>
+    </AppLayout>
   );
 };
 
