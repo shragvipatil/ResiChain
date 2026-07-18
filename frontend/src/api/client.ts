@@ -19,7 +19,13 @@
 
 import axios from "axios";
 
-export const USE_MOCK = true;
+export const USE_MOCK = false;
+
+// Real backend auth endpoints (/api/auth/login, /api/auth/me, etc.) are not
+// built yet — confirmed via live 404 on /api/auth/login. Keep auth on mock
+// login independently of the main USE_MOCK flag so role-based routing still
+// works while every other endpoint hits the real running backend.
+export const AUTH_USE_MOCK = true;
 
 export const apiClient = axios.create({
   baseURL: "http://localhost:8000/api",

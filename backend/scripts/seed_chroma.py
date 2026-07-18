@@ -21,7 +21,7 @@ from pathlib import Path
 # can't be found. This has been a pre-existing landmine in this file since
 # before today; it just hadn't been run against a truly clean environment
 # until this clean-boot test caught it.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 
 from db.chroma_client import init_chroma, seed_historical_events
 

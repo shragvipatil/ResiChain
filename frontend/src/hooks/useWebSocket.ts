@@ -4,7 +4,16 @@ import { WebSocketEvent } from "../types";
 export const useWebSocket = (onEvent: (event: WebSocketEvent) => void) => {
   const ws = useRef<WebSocket | null>(null);
   const [connected, setConnected] = useState(false);
- const reconnectTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const reconnectTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  // Always call the LATEST onEvent without the socket lifecycle depending
+  // on its identity — prevents the socket from being torn down/rebuilt on
+  // every parent re-render (confirmed cause of "WebSocket is closed before
+  // the connection is established" firing repeatedly).
+  const onEventRef = useRef(onEvent);
+  useEffect(() => {
+    onEventRef.current = onEvent;
+  }, [onEvent]);
 
   const connect = useCallback(() => {
     try {
@@ -13,7 +22,7 @@ export const useWebSocket = (onEvent: (event: WebSocketEvent) => void) => {
       ws.current.onmessage = (msg) => {
         try {
           const event: WebSocketEvent = JSON.parse(msg.data);
-          onEvent(event);
+          onEventRef.current(event);
         } catch {
           console.error("Failed to parse WebSocket message");
         }
@@ -26,7 +35,8 @@ export const useWebSocket = (onEvent: (event: WebSocketEvent) => void) => {
     } catch {
       reconnectTimer.current = setTimeout(connect, 3000);
     }
-  }, [onEvent]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     connect();
@@ -34,7 +44,8 @@ export const useWebSocket = (onEvent: (event: WebSocketEvent) => void) => {
       clearTimeout(reconnectTimer.current);
       ws.current?.close();
     };
-  }, [connect]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return { connected };
 };

@@ -14,7 +14,7 @@
  * will animate in real time during the demo without any changes here.
  */
 
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import { useAppContext } from "../context/AppContext";
 import { getAgentStatus } from "../api/endpoints";
 import { AgentInfo, AgentStatus } from "../types";
@@ -127,10 +127,14 @@ const AgentRow: React.FC<{ id: string; info: AgentInfo }> = ({ id, info }) => {
 // ── Panel ─────────────────────────────────────────────────────────────────────
 const AgentStatusPanel: React.FC = () => {
   const { agentStatus, setAgentStatus, wsConnected, riskState } = useAppContext();
+  const [fetchError, setFetchError] = useState(false);
 
-  // Seed initial agent status from API on mount
+  // Seed initial agent status from API on mount — was previously unhandled,
+  // crashing the whole app with an uncaught AxiosError when backend is down.
   useEffect(() => {
-    getAgentStatus().then(setAgentStatus);
+    getAgentStatus()
+      .then((data) => { setAgentStatus(data); setFetchError(false); })
+      .catch(() => setFetchError(true));
   }, [setAgentStatus]);
 
   const agents = agentStatus?.agents ?? {};
@@ -144,7 +148,9 @@ const AgentStatusPanel: React.FC = () => {
         <div>
           <h2 className="text-white text-sm font-medium">Agent Pipeline</h2>
           <p className="text-slate-500 text-xs mt-0.5">
-            {runningCount > 0
+            {fetchError
+              ? "Unable to reach backend"
+              : runningCount > 0
               ? `${runningCount} agent${runningCount > 1 ? "s" : ""} running`
               : "All agents idle"}
           </p>

@@ -36,17 +36,26 @@ const MinistryPage: React.FC = () => {
     navigate("/login", { replace: true });
   };
   const [vessels, setVessels] = useState<Vessel[]>([]);
+  const [backendUnreachable, setBackendUnreachable] = useState(false);
   const pollRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Seed initial risk state
+  // Seed initial risk state — was previously unhandled, crashing the whole
+  // page with an uncaught AxiosError when the backend is unreachable
+  // (confirmed via Docker stopping mid-session). Now shows a banner instead.
   useEffect(() => {
-    if (!riskState) getRiskState().then(setRiskState);
+    if (!riskState) {
+      getRiskState()
+        .then((data) => { setRiskState(data); setBackendUnreachable(false); })
+        .catch(() => setBackendUnreachable(true));
+    }
   }, [riskState, setRiskState]);
 
   // Vessel polling — every 5 minutes
   useEffect(() => {
     const fetchVessels = () =>
-      getVessels().then((res) => setVessels(res.vessels)).catch(() => {});
+      getVessels()
+        .then((res) => { setVessels(res.vessels); setBackendUnreachable(false); })
+        .catch(() => setBackendUnreachable(true));
 
     fetchVessels(); // immediate on mount
     pollRef.current = setInterval(fetchVessels, VESSEL_POLL_INTERVAL_MS);
@@ -89,6 +98,24 @@ const MinistryPage: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Backend unreachable banner — replaces uncaught crash with a visible, dismissible state */}
+      {backendUnreachable && (
+        <div className="mb-6 bg-red-900/30 border border-red-800 rounded-xl px-5 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-red-400 animate-pulse" />
+            <p className="text-red-400 text-sm">
+              Backend unreachable — showing last known data. Retrying automatically…
+            </p>
+          </div>
+          <button
+            onClick={() => window.location.reload()}
+            className="text-xs text-red-300 hover:text-white underline"
+          >
+            Reload now
+          </button>
+        </div>
+      )}
 
       {/* Corridor risk cards */}
       <div className="grid grid-cols-4 gap-4 mb-8">
@@ -174,7 +201,7 @@ const MinistryPage: React.FC = () => {
               {riskState?.system_mode ?? "—"}
             </span>
           </p>
-          <p className="text-slate-500 text-xs mt-1">Last updated: {riskState?.last_updated ?? "—"}</p>
+          <p className="text-slate-500 text-xs mt-1">Last updated: {riskState?.updated_at ?? "—"}</p>
         </div>
         {vessels.length > 0 && (
           <p className="text-slate-600 text-xs">{vessels.length} vessels · refreshes every 5 min</p>

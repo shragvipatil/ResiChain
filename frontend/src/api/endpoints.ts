@@ -1,4 +1,4 @@
-import { USE_MOCK, apiClient } from "./client";
+import { USE_MOCK, AUTH_USE_MOCK, apiClient } from "./client";
 import {
   mockRiskState, mockProcurement,
   mockPrices, mockAgentStatus, mockVessels, mockPlaybook,
@@ -20,7 +20,35 @@ export const getRiskState = async (): Promise<CorridorRiskState> => {
 export const getProcurementOptions = async (): Promise<ProcurementResponse> => {
   if (USE_MOCK) { await delay(500); return mockProcurement; }
   const res = await apiClient.get("/procurement/options");
-  return res.data;
+  const raw = res.data;
+
+  // Real backend returns { options: [...], total, generated_at?, source }
+  // with each option using id/grade instead of option_id/crude_grade.
+  const rawOptions: any[] = raw?.options ?? [];
+  const options = rawOptions.map((o: any) => ({
+    option_id:                  o.option_id ?? o.id ?? "",
+    supplier:                   o.supplier ?? "Unknown",
+    crude_grade:                o.crude_grade ?? o.grade ?? "",
+    status:                     o.status ?? "BLOCKED",
+    confidence:                 o.confidence ?? 0,
+    rule_triggered:             o.rule_triggered,
+    reason:                     o.reason ?? (o.block_reason
+      ? { rule: o.rule_triggered ?? "UNKNOWN", value: o.block_reason, threshold: null, source: "" }
+      : null),
+    route:                      o.route,
+    transit_days:               o.transit_days,
+    cost_delta_usd_per_barrel:  o.cost_delta_usd_per_barrel ?? o.price_premium_pct,
+    volume_mbd:                 o.volume_mbd,
+    tanker_available:           o.tanker_available,
+    max_allowed_delta_mbd:      o.max_allowed_delta_mbd,
+    evaluated_at:               o.evaluated_at ?? raw?.generated_at ?? new Date().toISOString(),
+  }));
+
+  return {
+    evaluated_at:         raw?.generated_at ?? new Date().toISOString(),
+    surviving_corridors:  raw?.surviving_corridors ?? [],
+    options,
+  };
 };
 
 export const getLivePrices = async (): Promise<PricesResponse> => {
@@ -38,7 +66,31 @@ export const getAgentStatus = async (): Promise<AgentsStatusResponse> => {
 export const getVessels = async (): Promise<VesselsResponse> => {
   if (USE_MOCK) { await delay(300); return mockVessels; }
   const res = await apiClient.get("/map/vessels");
-  return res.data;
+  const raw = res.data;
+
+  // Real backend sends { mmsi, name, lat, lon, speed, destination, vessel_type }
+  // Frontend Vessel type expects { latitude, longitude, speed_knots, heading_degrees }.
+  // Confirmed root cause of "Invalid LatLng object: (undefined, undefined)" crash
+  // in ShippingMap. Normalizing here.
+  const rawVessels: unknown[] = Array.isArray(raw) ? raw : raw?.vessels ?? [];
+  const vessels = rawVessels
+    .map((v: any) => ({
+      mmsi:            v.mmsi ?? "",
+      name:            v.name ?? "Unknown Vessel",
+      vessel_type:     v.vessel_type ?? "unknown",
+      latitude:        v.latitude ?? v.lat,
+      longitude:       v.longitude ?? v.lon,
+      speed_knots:     v.speed_knots ?? v.speed ?? 0,
+      heading_degrees: v.heading_degrees ?? 0,
+      last_updated:    v.last_updated ?? new Date().toISOString(),
+    }))
+    .filter((v) => typeof v.latitude === "number" && typeof v.longitude === "number");
+
+  return {
+    vessels,
+    cache_age_seconds: raw?.cache_age_seconds ?? 0,
+    source: raw?.source ?? "live",
+  };
 };
 
 export const updateRiskWeights = async (weights: {
@@ -57,7 +109,51 @@ export const updateRiskWeights = async (weights: {
 export const getPlaybook = async (id: string): Promise<Playbook> => {
   if (USE_MOCK) { await delay(400); return mockPlaybook; }
   const res = await apiClient.get(`/playbook/${id}`);
-  return res.data;
+  const raw = res.data;
+
+  // Real backend playbook shape (confirmed live via curl) is entirely
+  // different from the frontend Playbook type — this is Agent 8's mock
+  // output shape (id, event_summary, spr_schedule, evidence_chain) with
+  // NO actions array at all, vs. what PlaybookPage was built against
+  // (playbook_id, corridor_affected, actions[]). Without this actions
+  // array, initActionStates(pb.actions) called .map() on undefined and
+  // crashed. Normalizing here — synthesizing a single action summarizing
+  // the playbook until Agent 8's real per-action breakdown is available.
+  const evidence = raw.evidence_chain ?? {};
+  const signalSeconds = evidence.signal_to_playbook_seconds ?? 0;
+  const readyAt = raw.created_at ?? new Date().toISOString();
+  const detectedAt = new Date(
+    new Date(readyAt).getTime() - signalSeconds * 1000
+  ).toISOString();
+
+  const syntheticActions = Array.isArray(raw.actions) && raw.actions.length > 0
+    ? raw.actions
+    : [{
+        action_id:                 raw.id ?? id,
+        title:                     raw.event_summary ?? "Recommended response",
+        supplier:                  "Diversified suppliers",
+        crude_grade:               "Mixed",
+        route:                     "Cape of Good Hope",
+        confidence:                raw.overall_confidence ?? 0,
+        cost_delta_usd_per_barrel: raw.cost_delta_bn ? raw.cost_delta_bn * 1000 : 0,
+        volume_mbd:                raw.spr_schedule?.daily_drawdown_mbd ?? 0,
+        transit_days:              raw.spr_schedule?.duration_days ?? 0,
+        contract_reference:        "—",
+        rationale:                 `Supply continuity: ${raw.supply_continuity_pct ?? "—"}%`,
+      }];
+
+  return {
+    playbook_id:        raw.id ?? raw.playbook_id ?? id,
+    status:              raw.status ?? "pending_review",
+    created_at:          raw.created_at ?? new Date().toISOString(),
+    signal_detected_at:  raw.signal_detected_at ?? detectedAt,
+    playbook_ready_at:   raw.playbook_ready_at ?? readyAt,
+    corridor_affected:   raw.corridor_affected ?? raw.event_summary ?? "—",
+    compound_risk:       raw.compound_risk ?? 0,
+    overall_confidence:  raw.overall_confidence ?? 0,
+    actions:             syntheticActions,
+    analyst_notes:       raw.analyst_notes,
+  };
 };
 
 export const approvePlaybook = async (
@@ -181,7 +277,7 @@ const MOCK_USERS: Record<string, { user: User; password: string; requiresTotp: b
 };
 
 export const login = async (body: LoginRequest): Promise<LoginResponse> => {
-  if (USE_MOCK) {
+  if (AUTH_USE_MOCK) {
     await delay(500);
     const record = MOCK_USERS[body.email];
     if (!record || record.password !== body.password) {
@@ -203,7 +299,7 @@ export const login = async (body: LoginRequest): Promise<LoginResponse> => {
 };
 
 export const logout = async (): Promise<void> => {
-  if (USE_MOCK) {
+  if (AUTH_USE_MOCK) {
     await delay(200);
     sessionStorage.removeItem("mock_user");
     return;
@@ -212,7 +308,7 @@ export const logout = async (): Promise<void> => {
 };
 
 export const getCurrentUser = async (): Promise<User | null> => {
-  if (USE_MOCK) {
+  if (AUTH_USE_MOCK) {
     await delay(150);
     const raw = sessionStorage.getItem("mock_user");
     return raw ? JSON.parse(raw) : null;
