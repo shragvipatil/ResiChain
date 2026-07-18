@@ -247,13 +247,16 @@ const ConfirmModal: React.FC<ConfirmModalProps> = ({ approved, rejected, pending
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 const PlaybookPage: React.FC = () => {
-  const DEMO_PLAYBOOK_ID = "pb_20240115_001";
-  // The PDF endpoint is real backend code (not mockable) — it always targets
-  // the backend's own demo playbook id, independent of the frontend USE_MOCK flag.
+  // Both playbook data fetch and PDF export must target the SAME real
+  // backend playbook id. Previously getPlaybook() used a leftover
+  // mock-era id ("pb_20240115_001") that was never seeded on the real
+  // backend, while PDF export already correctly used "pb_001" — this
+  // mismatch caused a 404 crash when opening this page with USE_MOCK=false.
   const BACKEND_PLAYBOOK_ID = "pb_001";
 
   const [playbook, setPlaybook]       = useState<Playbook | null>(null);
   const [loading, setLoading]         = useState(true);
+  const [loadError, setLoadError]     = useState(false);
   const [actionStates, setActionStates] = useState<Record<string, ActionState>>({});
   const [showModal, setShowModal]     = useState(false);
   const [submitting, setSubmitting]   = useState(false);
@@ -286,11 +289,17 @@ const PlaybookPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    getPlaybook(DEMO_PLAYBOOK_ID).then((pb) => {
-      setPlaybook(pb);
-      setActionStates(initActionStates(pb.actions));
-      setLoading(false);
-    });
+    getPlaybook(BACKEND_PLAYBOOK_ID)
+      .then((pb) => {
+        setPlaybook(pb);
+        setActionStates(initActionStates(pb.actions));
+        setLoading(false);
+        setLoadError(false);
+      })
+      .catch(() => {
+        setLoading(false);
+        setLoadError(true);
+      });
   }, []);
 
   const handleActionChange = useCallback((id: string, patch: Partial<ActionState>) => {
@@ -333,7 +342,24 @@ const PlaybookPage: React.FC = () => {
     );
   }
 
-  if (!playbook) return null;
+  if (loadError || !playbook) {
+    return (
+      <div className="min-h-screen bg-slate-900 p-8 flex items-center justify-center">
+        <div className="bg-slate-800 border border-red-800 rounded-xl p-6 max-w-md text-center">
+          <p className="text-red-400 text-sm font-medium mb-1">Unable to load playbook</p>
+          <p className="text-slate-500 text-xs">
+            The backend may be unreachable, or no playbook exists yet with id "{BACKEND_PLAYBOOK_ID}".
+          </p>
+          <button
+            onClick={() => window.location.reload()}
+            className="mt-4 text-xs text-blue-400 hover:underline"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   const sc       = statusConfig(playbook.status);
   const elapsed  = elapsedSeconds(playbook.signal_detected_at, playbook.playbook_ready_at);
