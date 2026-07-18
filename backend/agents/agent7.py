@@ -22,7 +22,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 MAX_SUPPLIER_SHARE_PCT: float = float(
-    os.getenv("MAXSUPPLIERSHAREPCT", os.getenv("MAX_SUPPLIER_SHARE_PCT", "0.40"))
+    os.getenv("MAX_SUPPLIER_SHARE_PCT", os.getenv("MAXSUPPLIERSHAREPCT", "0.40"))
 )
 INDIA_DAILY_CONSUMPTION_MBD: float = float(
     os.getenv("INDIA_DAILY_CONSUMPTION_MBD", "5.1")
@@ -41,13 +41,31 @@ def _get_redis() -> redis_lib.Redis:
     global _redis_client
     if _redis_client is None:
         _redis_client = redis_lib.from_url(
-            os.getenv("REDISURL", os.getenv("REDIS_URL", "redis://redis:6379/0")),
+            os.getenv("REDIS_URL", os.getenv("REDISURL", "redis://redis:6379/0")),
             decode_responses=True,
         )
     return _redis_client
 
 
 def _get_vessels_near_port(departure_port: str) -> int:
+    """
+    Counts live vessels positioned at/near the given departure port.
+
+    FIX (Day 18): previously matched on vessel["destination"], which is
+    semantically wrong — "destination" means where a vessel is HEADING,
+    not where it currently is. Demo seed data originally set destinations
+    to Indian arrival ports (SIKKA, VADINAR, PARADIP) since those vessels
+    represent tankers already en route TO India, which meant this check
+    could never match a Gulf departure port (Ras Tanura, Fujairah, Basra
+    Oil Terminal) and every procurement candidate was silently BLOCKED
+    on TANKER_UNAVAILABLE regardless of actual chokepoint status.
+
+    Now checks a dedicated "current_port" field (falling back to
+    "location" or "destination" for backward compatibility with older
+    seed/AIS payloads), which correctly represents where a vessel is
+    physically positioned right now — the actual question this Layer 4
+    check is trying to answer.
+    """
     try:
         r = _get_redis()
         raw = r.get("vessels:live") or r.get("vesselslive")
@@ -55,9 +73,15 @@ def _get_vessels_near_port(departure_port: str) -> int:
             return 0
 
         vessels = json.loads(raw)
+        target = departure_port.strip().lower()
         count = 0
         for v in vessels:
-            if str(v.get("destination", "")).strip().lower() == departure_port.strip().lower():
+            current_location = (
+                v.get("current_port")
+                or v.get("location")
+                or v.get("destination", "")
+            )
+            if str(current_location).strip().lower() == target:
                 count += 1
         return count
     except Exception as exc:
