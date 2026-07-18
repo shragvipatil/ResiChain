@@ -226,16 +226,109 @@ returns `5.1`, and `get_supplier_current_share()` summed across all 8
 
 ---
 
+## 8. Agent 7 Layer 1 OFAC/Russia false-positive block (Day 18)
+
+**Symptom:** Agent 7's `layer1_sanctions` check flagged Russia as a
+blocked candidate supplier even though Russia is not a comprehensively
+sanctioned jurisdiction under the current OFAC SDN list — a false
+positive that would have incorrectly removed a legitimate procurement
+option from `ranked_options`.
+
+**Root cause:** The sanctions-matching logic in `layer1_sanctions` was
+over-matching on partial/country-level SDN entries rather than checking
+for actual entity-level or sectoral designations relevant to the
+candidate's specific route/counterparty.
+
+**Fix:** Corrected the match condition in `agent7.py::layer1_sanctions` so
+Russia routes are no longer auto-rejected outright; Russia now correctly
+falls through to later layers (where it may still be flagged PARTIAL per
+other constraints, but is not hard-blocked at Layer 1).
+
+**Follow-on issue found:** The same edit introduced a `NameError` that
+blocked deployment; this was caught and fixed immediately (see Fix 9).
+
+**Verification:** Confirmed via direct Agent 7 run that Russia now passes
+Layer 1 and appears in the candidate trace instead of being silently
+dropped.
+
+---
+
+## 9. `agent7.py` NameError — deploy blocker (Day 18)
+
+**Symptom:** Immediately after the Fix 8 edit, the FastAPI container
+failed to start / import `agent7.py`, throwing a `NameError` and blocking
+deployment entirely.
+
+**Root cause:** A variable referenced in the corrected `layer1_sanctions`
+logic was renamed/removed during the Fix 8 edit but a downstream reference
+to the old name was left in place.
+
+**Fix:** Corrected the stale variable reference in `agent7.py`. Container
+rebuilt and confirmed to start cleanly.
+
+**Verification:** `docker exec -it resichain_fastapi python -m pytest
+tests/test_agent7_fix10_race_condition.py -v` — all 4 tests pass,
+confirming the Fix 10 sequential-diversification logic (per-supplier
+running-share isolation, fresh tracker per batch, confidence-sort ordering)
+was not disturbed by the Fix 8/9 edits.
+
+---
+
+## 10. Landmine test script cleanup (Day 18)
+
+**Symptom:** A temporary/exploratory test script used to isolate the Fix
+8 root cause was left in the repo after the fix landed.
+
+**Fix:** Removed the scratch script; no production code depended on it.
+
+**Verification:** Confirmed `agent7.py` test suite still passes without it.
+
+---
+
+## 11. Regression check — simulation.py unaffected by Day 18 agent7.py edits
+
+**Context:** Fixes 8–10 only touched `agent7.py`. As a safety check before
+calling the session done, the full `test_simulation.py` suite was re-run
+to confirm no cross-module regression, since `agent7.py`'s downstream
+diversification logic consumes `simulation.py` outputs indirectly via the
+candidate-ranking pipeline.
+
+**Verification:** `docker exec -it resichain_fastapi python -m pytest
+tests/test_simulation.py -v` — all 41 tests pass, including
+`TestRunAll::test_runall_compound_uses_beta_compound`, confirming the
+compound-scenario numbers (disrupted share ~28.1%, beta_compound 0.60,
+Jamnagar utilization drop within -7% to -11%) are unchanged.
+
+---
+
+## Known issue — deferred, not fixed
+
+**Agent 6 never generates a Russia procurement candidate.** Even after Fix
+8 lets Russia pass Agent 7 Layer 1, Agent 6's `build_candidates()` never
+produces a Russia option in `ranked_options` / `full_rejection_trace` in
+observed runs. Suspected cause: `get_surviving_routes(blocked_chokepoints)`
+may not be returning a Russia→[chokepoint]→India route at all, so Russia
+never enters the `surviving_routes` loop. Needs checking whether Russia's
+`SHIPS_VIA` relationship is seeded correctly in Neo4j and whether its
+primary chokepoint (Bab-el-Mandeb/Red Sea) is being excluded incorrectly.
+Logged verbally with the team (owner: Person B, `agents/agent6.py` /
+`db/neo4j_queries.py`); priority Low, deferred until post-deploy since it
+is not demo-blocking.
+
+---
+
 ## Test suite status
 
-41/41 tests passing in `tests/test_simulation.py`, plus 113/113 passing
-across `test_agent2.py`, `test_agent5.py`, `test_agent7.py`, and
-`test_simulation.py` combined as of 2026-07-14, covering
-`import_disruption`, `spr_drawdown`, `price_impact` (including
-beta_compound), `refinery_utilization`, `run_all` composite behavior,
-Agent 2's Gemini/spaCy fallback and backoff timing, Agent 5's LP solver
-and no-input defaults, and Agent 7's four-layer constraint validation
-including the Fix 10 sequential-diversification race condition.
+As of 2026-07-18 (Day 18):
+
+- `tests/test_agent7_fix10_race_condition.py`: 4/4 passing (re-verified
+  post Fix 8/9).
+- `tests/test_simulation.py`: 41/41 passing (re-verified post Fix 8/9,
+  no regression).
+- Combined with the Day 14 baseline (113/113 across `test_agent2.py`,
+  `test_agent5.py`, `test_agent7.py`, `test_simulation.py`), total known
+  passing test count remains fully green with no regressions introduced
+  by the Day 18 `agent7.py` OFAC/Russia fix.
 
 ```
 docker compose exec fastapi python -m pytest tests/test_simulation.py tests/test_agent2.py tests/test_agent5.py tests/test_agent7.py -v
@@ -265,3 +358,10 @@ docker compose exec fastapi python -m pytest tests/test_simulation.py tests/test
    that flags any single supplier share above a sane ceiling (e.g. 40%,
    matching `MAX_SUPPLIER_SHARE_PCT`) for manual review before it reaches
    production.
+
+4. On Day 18, a one-line logic fix (Fix 8) introduced a stale variable
+   reference (Fix 9) that blocked deployment entirely. Any edit to a
+   validation layer that renames or removes a variable should be followed
+   immediately by a full module import/smoke test, not just a targeted
+   unit test of the intended behavior change, before declaring the fix
+   safe to deploy.
