@@ -293,7 +293,6 @@ def check_ofac_match(supplier_name: str) -> bool:
             cur.execute(sql, {"pattern": pattern})
             return cur.fetchone() is not None
 
-# db/postgres_queries.py — add alongside check_ofac_match
 
 COMPREHENSIVE_SANCTIONS_COUNTRIES = {
     "iran", "islamic republic of iran",
@@ -301,6 +300,7 @@ COMPREHENSIVE_SANCTIONS_COUNTRIES = {
     "cuba",
     "syria", "syrian arab republic",
 }
+
 
 def is_comprehensively_sanctioned_country(country_name: str) -> bool:
     """
@@ -313,6 +313,8 @@ def is_comprehensively_sanctioned_country(country_name: str) -> bool:
     sanctioned entities like Central Bank of Russia, but is not
     itself comprehensively embargoed for crude oil imports).
     """
+    if not country_name or not country_name.strip():
+        return False
     return country_name.strip().lower() in COMPREHENSIVE_SANCTIONS_COUNTRIES
 
 

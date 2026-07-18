@@ -16,7 +16,11 @@ from db.neo4j_queries import (
     get_port_specs,
     get_supplier_current_share,
 )
-from db.postgres_queries import check_ofac_match, insert_procurement_evaluation
+from db.postgres_queries import (
+    check_ofac_match,
+    insert_procurement_evaluation,
+    is_comprehensively_sanctioned_country,
+)
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -52,7 +56,7 @@ def _get_vessels_near_port(departure_port: str) -> int:
     Counts live vessels positioned at/near the given departure port.
 
     FIX (Day 18): previously matched on vessel["destination"], which is
-    semantically wrong — "destination" means where a vessel is HEADING,
+    semantically wrong -- "destination" means where a vessel is HEADING,
     not where it currently is. Demo seed data originally set destinations
     to Indian arrival ports (SIKKA, VADINAR, PARADIP) since those vessels
     represent tankers already en route TO India, which meant this check
@@ -63,7 +67,7 @@ def _get_vessels_near_port(departure_port: str) -> int:
     Now checks a dedicated "current_port" field (falling back to
     "location" or "destination" for backward compatibility with older
     seed/AIS payloads), which correctly represents where a vessel is
-    physically positioned right now — the actual question this Layer 4
+    physically positioned right now -- the actual question this Layer 4
     check is trying to answer.
     """
     try:
@@ -136,23 +140,44 @@ def _result(
 
 
 def layer1_sanctions(candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Layer 1: Sanctions check.
+
+    FIX (Item 3/4): split into two distinct checks instead of one bare
+    string match against the supplier name:
+
+    1. Comprehensive country embargo check (Iran, North Korea, Cuba,
+       Syria) -- catches genuine blanket embargoes without touching the
+       SDN entity table at all.
+    2. Entity-level SDN check, run ONLY against a specific named
+       counterparty (e.g. a tanker operator, trading company, or bank),
+       never against a bare country name -- avoids false positives like
+       "Russia" matching "Bank of Russia" / "Central Bank of the Russian
+       Federation" in the SDN table, which are real sanctioned entities
+       but do not make the country itself comprehensively embargoed.
+    """
     supplier = candidate["supplier"]
 
     # Country-level embargo check first (Iran, North Korea, Cuba, Syria)
     if is_comprehensively_sanctioned_country(supplier):
-        return reason("OFAC_SDN", supplier, None, "ofac.treasury.gov - comprehensive sanctions program")
+        return _reason(
+            "OFAC_SDN",
+            supplier,
+            None,
+            "ofac.treasury.gov - comprehensive sanctions program",
+        )
 
     # Entity-level SDN check for specific named counterparties only
-    # (not run against bare country names — avoids false positives like
+    # (not run against bare country names -- avoids false positives like
     # "Russia" matching "Bank of Russia")
     counterparty = candidate.get("counterparty_entity")  # specific company/bank name, if any
     if counterparty:
         try:
             match = check_ofac_match(counterparty)
         except Exception as exc:
-            return reason("OFAC_SDN_CHECK_FAILED", str(exc), None, "ofac_sdn")
+            return _reason("OFAC_SDN_CHECK_FAILED", str(exc), None, "ofac_sdn")
         if match:
-            return reason("OFAC_SDN", counterparty, None, "ofac_sdn")
+            return _reason("OFAC_SDN", counterparty, None, "ofac_sdn")
 
     return None
 
@@ -329,7 +354,7 @@ def validator(
 ) -> Dict[str, Any]:
     tracker = tracker or _default_tracker
 
-    reason = _layer1_sanctions(candidate)
+    reason = layer1_sanctions(candidate)
     if reason:
         return _result(
             status="BLOCKED",
