@@ -22,7 +22,7 @@ from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
-COLLECTION_NAME = "disruptionreports"
+COLLECTION_NAME = "disruptionreports"  # must match agents/agent2.py's COLLECTION_NAME — this was previously "disruptionreports" (no underscore), a different collection than the one the running app queries
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 
 CHROMA_HOST = os.getenv("CHROMA_HOST", os.getenv("CHROMAHOST", "chromadb"))
