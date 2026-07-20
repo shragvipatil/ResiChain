@@ -4,6 +4,7 @@ import { getProcurementOptions, getLivePrices } from "../api/endpoints";
 import { ProcurementOption, ProcurementResponse, PricesResponse } from "../types";
 import RejectionTraceAnimation from "../components/RejectionTraceAnimation";
 import { useAppContext } from "../context/AppContext";
+import AppLayout from "../components/AppLayout";
 
 // Day 13: replace with real API call
 const CONTRACT_HEADROOM = [
@@ -166,30 +167,32 @@ const ProcurementPage: React.FC = () => {
   }, []);
 
   return (
-    <div className="min-h-screen bg-slate-900 p-8">
+    <AppLayout>
       <div className="mb-8 flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-medium text-white">Procurement Operations</h1>
           <p className="text-slate-400 text-sm mt-1">Supply alternatives · Contract headroom · Evaluation trace</p>
         </div>
-        <button
-          onClick={() => navigate("/playbook")}
-          className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-lg transition-colors"
-        >
-          View Playbook →
-        </button>
-        {procurement && (
-          <div className="text-right">
-            <p className="text-slate-500 text-xs">Surviving corridors</p>
-            <div className="flex gap-2 mt-1 justify-end">
-              {procurement.surviving_corridors.map((c) => (
-                <span key={c} className="text-xs bg-green-900/50 text-green-400 border border-green-800 px-2 py-0.5 rounded">
-                  {c.replace("_", " ")}
-                </span>
-              ))}
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => navigate("/playbook")}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-lg transition-colors"
+          >
+            View Playbook →
+          </button>
+          {procurement && (
+            <div className="text-right">
+              <p className="text-slate-500 text-xs">Surviving corridors</p>
+              <div className="flex gap-2 mt-1 justify-end">
+                {procurement.surviving_corridors.map((c) => (
+                  <span key={c} className="text-xs bg-green-900/50 text-green-400 border border-green-800 px-2 py-0.5 rounded">
+                    {c.replace("_", " ")}
+                  </span>
+                ))}
+              </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       <section className="mb-6">
@@ -214,7 +217,7 @@ const ProcurementPage: React.FC = () => {
               replayTrigger={playbookReady}
             />}
       </section>
-    </div>
+    </AppLayout>
   );
 };
 

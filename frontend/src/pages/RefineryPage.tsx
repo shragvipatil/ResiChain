@@ -12,8 +12,7 @@
  */
 
 import React, { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { useAuth } from "../context/AuthContext";
+import AppLayout from "../components/AppLayout";
 import {
   getRefineryGrades, getTankerETAs, getGradeSwitchOptions, getDeliverySchedule,
 } from "../api/endpoints";
@@ -200,9 +199,6 @@ const DeliverySchedulePanel: React.FC<{ data: DeliveryScheduleDay[] }> = ({ data
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 const RefineryPage: React.FC = () => {
-  const { user, logout } = useAuth();
-  const navigate = useNavigate();
-
   const [grades, setGrades]     = useState<RefineryGradeInfo[]>([]);
   const [tankers, setTankers]   = useState<TankerETA[]>([]);
   const [switches, setSwitches] = useState<GradeSwitchOption[]>([]);
@@ -226,51 +222,42 @@ const RefineryPage: React.FC = () => {
     });
   }, []);
 
-  const handleLogout = async () => {
-    await logout();
-    navigate("/login", { replace: true });
-  };
-
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-900 p-8 space-y-4">
-        {[1, 2, 3].map((i) => (
-          <div key={i} className="h-40 bg-slate-800 rounded-xl border border-slate-700 animate-pulse" />
-        ))}
-      </div>
+      <AppLayout showRiskStrip={false}>
+        <div className="space-y-4">
+          {[1, 2, 3].map((i) => (
+            <div key={i} className="h-40 bg-slate-800 rounded-xl border border-slate-700 animate-pulse" />
+          ))}
+        </div>
+      </AppLayout>
     );
   }
 
   if (loadError) {
     return (
-      <div className="min-h-screen bg-slate-900 p-8 flex items-center justify-center">
-        <div className="bg-slate-800 border border-red-800 rounded-xl p-6 max-w-md text-center">
-          <p className="text-red-400 text-sm font-medium mb-1">Unable to load refinery data</p>
-          <p className="text-slate-500 text-xs">Backend may be unreachable.</p>
-          <button
-            onClick={() => window.location.reload()}
-            className="mt-4 text-xs text-blue-400 hover:underline"
-          >
-            Retry
-          </button>
+      <AppLayout showRiskStrip={false}>
+        <div className="flex items-center justify-center">
+          <div className="bg-slate-800 border border-red-800 rounded-xl p-6 max-w-md text-center">
+            <p className="text-red-400 text-sm font-medium mb-1">Unable to load refinery data</p>
+            <p className="text-slate-500 text-xs">Backend may be unreachable.</p>
+            <button
+              onClick={() => window.location.reload()}
+              className="mt-4 text-xs text-blue-400 hover:underline"
+            >
+              Retry
+            </button>
+          </div>
         </div>
-      </div>
+      </AppLayout>
     );
   }
 
   return (
-    <div className="min-h-screen bg-slate-900 p-8">
-      <div className="mb-8 flex items-start justify-between">
-        <div>
-          <h1 className="text-2xl font-medium text-white">Refinery Operations</h1>
-          <p className="text-slate-400 text-sm mt-1">Grade availability · Tanker ETAs · Switch feasibility · Delivery schedule</p>
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="text-slate-400 text-xs">{user?.name}</span>
-          <button onClick={handleLogout} className="text-slate-500 hover:text-red-400 text-xs transition-colors">
-            Logout
-          </button>
-        </div>
+    <AppLayout showRiskStrip={false}>
+      <div className="mb-8">
+        <h1 className="text-2xl font-medium text-white">Refinery Operations</h1>
+        <p className="text-slate-400 text-sm mt-1">Grade availability · Tanker ETAs · Switch feasibility · Delivery schedule</p>
       </div>
 
       <div className="grid grid-cols-2 gap-6 mb-6">
@@ -285,7 +272,7 @@ const RefineryPage: React.FC = () => {
       <div className="mb-6">
         <DeliverySchedulePanel data={schedule} />
       </div>
-    </div>
+    </AppLayout>
   );
 };
 

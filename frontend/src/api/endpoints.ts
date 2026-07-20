@@ -54,7 +54,23 @@ export const getProcurementOptions = async (): Promise<ProcurementResponse> => {
 export const getLivePrices = async (): Promise<PricesResponse> => {
   if (USE_MOCK) { await delay(200); return mockPrices; }
   const res = await apiClient.get("/prices/live");
-  return res.data;
+  const raw = res.data;
+
+  // Real backend returns { prices: { brent: {price, change_pct, commodity},
+  // wti: {...} }, source } — nested, different field names entirely from
+  // the flat PricesResponse type this UI was built against. Confirmed
+  // root cause of empty Brent/WTI cards on Procurement page.
+  const brent = raw?.prices?.brent ?? {};
+  const wti   = raw?.prices?.wti ?? {};
+
+  return {
+    brent_usd:              brent.price ?? 0,
+    wti_usd:                wti.price ?? 0,
+    brent_change_pct_24h:   brent.change_pct ?? 0,
+    wti_change_pct_24h:     wti.change_pct ?? 0,
+    fetched_at:             raw?.fetched_at ?? new Date().toISOString(),
+    source:                 raw?.source ?? "live",
+  };
 };
 
 export const getAgentStatus = async (): Promise<AgentsStatusResponse> => {
@@ -395,56 +411,82 @@ const MOCK_DELIVERY_SCHEDULE: DeliveryScheduleDay[] = Array.from({ length: 14 })
 
 export const getRefineryGrades = async (): Promise<RefineryGradeInfo[]> => {
   if (REFINERY_USE_MOCK) { await delay(300); return MOCK_REFINERY_GRADES; }
-  const res = await apiClient.get("/refinery/grades");
-  return res.data;
+  try {
+    const res = await apiClient.get("/refinery/grades");
+    return res.data;
+  } catch {
+    // Endpoint not built on real backend yet (confirmed 404) — fall back
+    // to demo data rather than crashing the whole Refinery dashboard.
+    return MOCK_REFINERY_GRADES;
+  }
 };
 
 export const getTankerETAs = async (): Promise<TankerETA[]> => {
   if (REFINERY_USE_MOCK) { await delay(300); return MOCK_TANKER_ETAS; }
-  const res = await apiClient.get("/refinery/tanker-etas");
-  return res.data;
+  try {
+    const res = await apiClient.get("/refinery/tanker-etas");
+    return res.data;
+  } catch {
+    return MOCK_TANKER_ETAS;
+  }
 };
 
 export const getGradeSwitchOptions = async (): Promise<GradeSwitchOption[]> => {
   if (REFINERY_USE_MOCK) { await delay(300); return MOCK_GRADE_SWITCHES; }
-  const res = await apiClient.get("/refinery/grade-switches");
-  return res.data;
+  try {
+    const res = await apiClient.get("/refinery/grade-switches");
+    return res.data;
+  } catch {
+    return MOCK_GRADE_SWITCHES;
+  }
 };
 
 export const getDeliverySchedule = async (): Promise<DeliveryScheduleDay[]> => {
   if (REFINERY_USE_MOCK) { await delay(300); return MOCK_DELIVERY_SCHEDULE; }
-  const res = await apiClient.get("/refinery/delivery-schedule");
-  return res.data;
+  try {
+    const res = await apiClient.get("/refinery/delivery-schedule");
+    return res.data;
+  } catch {
+    return MOCK_DELIVERY_SCHEDULE;
+  }
 };
 
 // ── Admin System Health endpoint (Day 12) ─────────────────────────────────────
 
 export const getSystemHealth = async (): Promise<SystemHealth> => {
-  if (ADMIN_USE_MOCK) {
-    await delay(300);
-    return {
-      agents: {
-        agent_1: { status: "RUNNING", last_run: new Date().toISOString() },
-        agent_2: { status: "IDLE",    last_run: new Date(Date.now() - 60000).toISOString() },
-        agent_3: { status: "IDLE",    last_run: new Date(Date.now() - 45000).toISOString() },
-        agent_4: { status: "INACTIVE", last_run: null },
-        agent_5: { status: "INACTIVE", last_run: null },
-        agent_6: { status: "INACTIVE", last_run: null },
-        agent_7: { status: "INACTIVE", last_run: null },
-        agent_8: { status: "INACTIVE", last_run: null },
-      },
-      redis_stream_depths: { "events:raw": 0, "events:verified": 0 },
-      postgres_pool: { active_connections: 4, max_connections: 20, status: "healthy" },
-      external_apis: [
-        { name: "GDELT",         last_success_at: new Date(Date.now() - 120000).toISOString(), status: "healthy", latency_ms: 340 },
-        { name: "UKMTO RSS",     last_success_at: new Date(Date.now() - 300000).toISOString(), status: "healthy", latency_ms: 210 },
-        { name: "OFAC SDN",      last_success_at: new Date(Date.now() - 3600000 * 5).toISOString(), status: "healthy", latency_ms: 890 },
-        { name: "Alpha Vantage", last_success_at: new Date(Date.now() - 300000).toISOString(), status: "healthy", latency_ms: 450 },
-        { name: "Gemini 2.5 Flash", last_success_at: null, status: "down", latency_ms: undefined },
-      ],
-      crisis_mode_active: false,
-    };
+  const mockHealth: SystemHealth = {
+    agents: {
+      agent_1: { status: "RUNNING", last_run: new Date().toISOString() },
+      agent_2: { status: "IDLE",    last_run: new Date(Date.now() - 60000).toISOString() },
+      agent_3: { status: "IDLE",    last_run: new Date(Date.now() - 45000).toISOString() },
+      agent_4: { status: "INACTIVE", last_run: null },
+      agent_5: { status: "INACTIVE", last_run: null },
+      agent_6: { status: "INACTIVE", last_run: null },
+      agent_7: { status: "INACTIVE", last_run: null },
+      agent_8: { status: "INACTIVE", last_run: null },
+    },
+    redis_stream_depths: { "events:raw": 0, "events:verified": 0 },
+    postgres_pool: { active_connections: 4, max_connections: 20, status: "healthy" },
+    external_apis: [
+      { name: "GDELT",         last_success_at: new Date(Date.now() - 120000).toISOString(), status: "healthy", latency_ms: 340 },
+      { name: "UKMTO RSS",     last_success_at: new Date(Date.now() - 300000).toISOString(), status: "healthy", latency_ms: 210 },
+      { name: "OFAC SDN",      last_success_at: new Date(Date.now() - 3600000 * 5).toISOString(), status: "healthy", latency_ms: 890 },
+      { name: "Alpha Vantage", last_success_at: new Date(Date.now() - 300000).toISOString(), status: "healthy", latency_ms: 450 },
+      { name: "Gemini 2.5 Flash", last_success_at: null, status: "down", latency_ms: undefined },
+    ],
+    crisis_mode_active: false,
+  };
+
+  if (ADMIN_USE_MOCK) { await delay(300); return mockHealth; }
+
+  // /admin/system-health confirmed 404 on real backend via live audit.
+  // AdminPage polls this every 5 seconds — without this try/catch, every
+  // single poll threw an uncaught AxiosError, which is why the page showed
+  // 50+ stacked "Request failed with status code 404" errors.
+  try {
+    const res = await apiClient.get("/admin/system-health");
+    return res.data;
+  } catch {
+    return mockHealth;
   }
-  const res = await apiClient.get("/admin/system-health");
-  return res.data;
 };

@@ -85,13 +85,28 @@ function normalise(weights: RiskWeights): RiskWeights {
   const total = Object.values(weights).reduce((s, v) => s + v, 0);
   if (total === 0) return { ...DEFAULT_WEIGHTS };
   const ratio = 100 / total;
-  return {
-    military_incidents:   Math.round(weights.military_incidents   * ratio),
-    conflict_escalation: Math.round(weights.conflict_escalation * ratio),
-    sanctions_change:    Math.round(weights.sanctions_change    * ratio),
-    market_volatility:   Math.round(weights.market_volatility   * ratio),
-    seasonal_risk:       Math.round(weights.seasonal_risk       * ratio),
-  };
+
+  const keys: (keyof RiskWeights)[] = [
+    "military_incidents", "conflict_escalation", "sanctions_change",
+    "market_volatility", "seasonal_risk",
+  ];
+
+  // Independently rounding each scaled value can drift the total away
+  // from exactly 100 (confirmed live: backend rejected a payload that
+  // summed to 1.10 instead of 1.00 after this function's old rounding
+  // logic ran). Fix: round all but the last value normally, then force
+  // the last value to absorb whatever remainder is needed so the total
+  // is always exactly 100 — standard "largest remainder" style fix.
+  const rounded: Partial<RiskWeights> = {};
+  let runningTotal = 0;
+  for (let i = 0; i < keys.length - 1; i++) {
+    const v = Math.round(weights[keys[i]] * ratio);
+    rounded[keys[i]] = v;
+    runningTotal += v;
+  }
+  rounded[keys[keys.length - 1]] = 100 - runningTotal;
+
+  return rounded as RiskWeights;
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────

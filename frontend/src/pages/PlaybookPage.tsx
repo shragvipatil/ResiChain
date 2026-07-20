@@ -17,8 +17,10 @@
  */
 
 import React, { useEffect, useState, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { getPlaybook, approvePlaybook } from "../api/endpoints";
 import { apiClient } from "../api/client";
+import { useAuth } from "../context/AuthContext";
 import {
   Playbook, PlaybookAction, ActionDecision,
   PlaybookStatus, ApprovePlaybookRequest,
@@ -247,6 +249,14 @@ const ConfirmModal: React.FC<ConfirmModalProps> = ({ approved, rejected, pending
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 const PlaybookPage: React.FC = () => {
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+
+  const handleLogout = async () => {
+    await logout();
+    navigate("/login", { replace: true });
+  };
+
   // Both playbook data fetch and PDF export must target the SAME real
   // backend playbook id. Previously getPlaybook() used a leftover
   // mock-era id ("pb_20240115_001") that was never seeded on the real
@@ -389,9 +399,20 @@ const PlaybookPage: React.FC = () => {
               {" · "}Compound risk: <span className="text-amber-400">{(playbook.compound_risk * 100).toFixed(0)}%</span>
             </p>
           </div>
-          <span className={`text-sm px-3 py-1.5 rounded-lg border font-medium ${sc.cls}`}>
-            {sc.label}
-          </span>
+          <div className="flex items-center gap-3">
+            <span className={`text-sm px-3 py-1.5 rounded-lg border font-medium ${sc.cls}`}>
+              {sc.label}
+            </span>
+            <div className="flex items-center gap-2 pl-2 border-l border-slate-700">
+              <span className="text-slate-400 text-xs">{user?.name}</span>
+              <button
+                onClick={handleLogout}
+                className="text-slate-500 hover:text-red-400 text-xs transition-colors"
+              >
+                Logout
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* PDF export buttons */}
