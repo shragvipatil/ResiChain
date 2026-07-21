@@ -44,6 +44,7 @@ interface AppContextType {
   crisisModeActive: boolean;
   compoundDisruptionDetected: boolean;   // Day 7: triggers Cape route animation
   wsConnected: boolean;
+  wsReconnecting: boolean;
   playbookReady: boolean;
 }
 
@@ -87,21 +88,70 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         // Future: could set watchAlertActive flag for UI badge
         break;
       case "AGENT_STARTED":
-      case "AGENT_COMPLETED":
-        // Merge the agent update into existing status
+      case "AGENT_COMPLETED": {
+        // Merge the agent update into existing status.
+        //
+        // Day 20 fix: the backend's AGENT_STARTED broadcast flips
+        // `status` to "running" but doesn't always include a fresh
+        // `last_run` timestamp in its `update` payload — that field
+        // is normally only written on completion. Without a fallback,
+        // a row could show RUNNING next to a stale "5h ago" carried
+        // over from the last completed run (confirmed live in the
+        // Command Center demo). Stamp the transition time from the
+        // client clock whenever the backend didn't supply its own —
+        // WS delivery latency is negligible for a "just now"/"Xm ago"
+        // label either way, and this keeps the row honest regardless
+        // of what the backend does or doesn't send.
+        const agentName = event.data.agent_name as string;
+        const update = (event.data.update as Record<string, unknown>) ?? {};
         setAgentStatus((prev) => {
           if (!prev) return prev;
-          const agentName = event.data.agent_name as string;
-          const update    = event.data.update as Record<string, unknown>;
+          const existing = prev.agents[agentName] ?? {};
           return {
             ...prev,
             agents: {
               ...prev.agents,
-              [agentName]: { ...prev.agents[agentName], ...update },
+              [agentName]: {
+                ...existing,
+                ...update,
+                last_run: (update.last_run as string) ?? new Date().toISOString(),
+              },
             },
           };
         });
         break;
+      }
+      case "PIPELINE_NODE_COMPLETE": {
+        // crisis_graph.py's LangGraph nodes broadcast this on completion —
+        // shape differs from AGENT_STARTED/AGENT_COMPLETED ({node,
+        // timestamp} instead of {agent_name, update}), and there's no
+        // matching "node started" broadcast, so this can only show
+        // "just completed" per stage, not a live spinner. Still gives
+        // real-time pipeline progress instead of the panel sitting
+        // frozen at all-INACTIVE during a crisis run.
+        const rawNode = event.data.node as string;
+        // Agent 5 runs twice (first pass, then again after Agent 6's
+        // approved options) — both map to the single "agent5" row in
+        // AGENT_META, since there's no separate entry for the two passes.
+        const agentKey = rawNode.startsWith("agent5") ? "agent5" : rawNode;
+
+        setAgentStatus((prev) => {
+          if (!prev) return prev;
+          const existing = prev.agents[agentKey] ?? {};
+          return {
+            ...prev,
+            agents: {
+              ...prev.agents,
+              [agentKey]: {
+                ...existing,
+                status: "idle",
+                last_run: (event.data.timestamp as string) ?? new Date().toISOString(),
+              },
+            },
+          };
+        });
+        break;
+      }
       default:
         // Log unrecognized event types during development so contract
         // drift like this surfaces immediately instead of silently no-oping.
@@ -112,7 +162,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, []);
 
-  const { connected: wsConnected } = useWebSocket(handleWsEvent);
+  const { connected: wsConnected, reconnecting: wsReconnecting } = useWebSocket(handleWsEvent);
 
   // Re-fetch fresh risk state every time the WebSocket (re)connects —
   // covers both initial load AND tab reopen/reconnect after a drop.
@@ -141,6 +191,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       crisisModeActive,
       compoundDisruptionDetected,
       wsConnected,
+      wsReconnecting,
       playbookReady,
     }}>
       {children}

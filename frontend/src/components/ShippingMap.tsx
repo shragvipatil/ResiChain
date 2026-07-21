@@ -313,7 +313,11 @@ const ShippingMap: React.FC<ShippingMapProps> = ({
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="relative w-full" style={{ height }}>
-      <div ref={mapContainerRef} className="w-full h-full rounded-xl overflow-hidden" />
+      <div
+        ref={mapContainerRef}
+        className="w-full h-full rounded-xl overflow-hidden"
+        style={{ position: "relative", zIndex: 0 }}
+      />
 
       {/* Port detail panel */}
       {selectedPort && (

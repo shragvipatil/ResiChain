@@ -14,6 +14,8 @@
  * Repeat it twice in the demo." — so it's prominent here.
  *
  * Day 13: no changes needed — just feed real API data.
+ * Day 17 fix: PDF download now aborts after 10 seconds instead of spinning
+ * forever if the backend hangs, and shows a distinct timeout message.
  */
 
 import React, { useEffect, useState, useCallback } from "react";
@@ -277,11 +279,20 @@ const PlaybookPage: React.FC = () => {
   const handleDownloadPdf = useCallback(async (role: "ministry" | "procurement") => {
     setDownloadingRole(role);
     setDownloadError(null);
+
+    // Day 17 fix: cap the wait at 10 seconds instead of spinning forever
+    // if the PDF endpoint hangs. AbortController cancels the axios request;
+    // axios rejects with a CanceledError (name === "CanceledError") when
+    // that happens, which we distinguish below to show a clearer message.
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10_000);
+
     try {
       const res = await apiClient.get(
         `/playbook/${BACKEND_PLAYBOOK_ID}/pdf`,
-        { params: { role }, responseType: "blob" }
+        { params: { role }, responseType: "blob", signal: controller.signal }
       );
+      clearTimeout(timeoutId);
       const blob = new Blob([res.data], { type: "application/pdf" });
       const url  = window.URL.createObjectURL(blob);
       const a    = document.createElement("a");
@@ -291,8 +302,14 @@ const PlaybookPage: React.FC = () => {
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
-    } catch {
-      setDownloadError("Could not generate PDF — check backend connection");
+    } catch (err: unknown) {
+      clearTimeout(timeoutId);
+      const isTimeout = err instanceof Error && err.name === "CanceledError";
+      setDownloadError(
+        isTimeout
+          ? "PDF generation timed out after 10s — backend may be busy. Try again."
+          : "Could not generate PDF — check backend connection"
+      );
     } finally {
       setDownloadingRole(null);
     }
