@@ -7,11 +7,7 @@ Demo pre-seed script — run 2 MINUTES BEFORE every demo and test run.
 
 Sets the exact Section-12 pre-demo state:
   1. risk:state          -> Hormuz 0.34, Red_Sea 0.41, Suez 0.18, Cape 0.05
-  2. vessels:live        -> 3 mock AIS tanker positions, POSITIONED AT
-                            SUPPLIER DEPARTURE PORTS (not Indian arrival
-                            ports) so Agent 7's Layer 4 tanker-availability
-                            check (_get_vessels_near_port) can actually
-                            match them. See FIX below.
+  2. vessels:live        -> 3 mock AIS tanker positions in the Arabian Sea
   3. audit_events (PG)   -> 1 historical resolved alert (Houthi drone near
                             Bab-el-Mandeb, 6 days ago, stage='resolved')
   4. agentN:last_run     -> agents 1, 2, 3, 5 (5 is read by the admin
@@ -21,18 +17,6 @@ Sets the exact Section-12 pre-demo state:
                             Without this, Agent 3's 60-second scheduled job
                             wipes the seeded state before the demo starts —
                             the exact race condition documented on Day 12.
-
-FIX (Day 18): Agent 7's _get_vessels_near_port(departure_port) matches
-vessel["destination"] against candidate["departure_port"] — the Gulf
-loading terminal each supplier ships FROM (see agent6.DEPARTURE_PORT_BY_
-SUPPLIER: Saudi Arabia -> "Ras Tanura", UAE -> "Fujairah", Iraq -> "Basra
-Oil Terminal"). The previous seed set vessel destinations to INDIAN
-arrival ports (SIKKA, VADINAR, PARADIP) — ships already en route TO
-India — which can never match a departure-port lookup. Every procurement
-candidate was therefore always BLOCKED on TANKER_UNAVAILABLE, regardless
-of chokepoint status. Vessels below are repositioned to the actual Gulf
-departure ports so UAE and Saudi Arabia candidates can resolve to
-APPROVED as intended.
 
 Idempotent: re-running replaces state, never stacks duplicate rows
 (the demo audit row is deleted by event_id before re-insert).
@@ -47,6 +31,13 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+# Bootstrap: seed_knowledge_graph.py never needed this because it talks to
+# Neo4j directly and never imports db.*. This script does (db.redis_client,
+# db.postgres_queries), and the Dockerfile has no PYTHONPATH=/app set — so
+# `python scripts/seed_demo_state.py` only puts /app/scripts on sys.path,
+# not /app, and `db` (which lives at /app/db) can't be found. Inserting the
+# parent directory here makes the script work no matter how it's invoked
+# (plain path, `python -m scripts.seed_demo_state`, or a different cwd).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from db.redis_client import (
@@ -70,34 +61,58 @@ DEMO_RISK_STATE = {
     "Cape": 0.05,
 }
 
-# FIX: destination now matches agents.agent6.DEPARTURE_PORT_BY_SUPPLIER
-# values, not Indian arrival ports, so Agent 7's tanker-availability check
-# (Layer 4, matches on candidate["departure_port"]) can find these vessels.
+# Same dict shape as market_client._get_demo_vessel_positions() so every
+# consumer (Agent 7 tanker checks, /api dashboard map) parses identically.
+#
+# current_port added (found by Person B, Day 19): Agent 7's
+# get_vessels_near_port() matches a candidate's DEPARTURE port (Ras
+# Tanura, Basra Oil Terminal, Fujairah, Novorossiysk — see agent6.py's
+# DEPARTURE_PORT_BY_SUPPLIER) against each vessel's current_port
+# (falling back to location, then destination). These records only had
+# `destination` set to the Indian ARRIVAL port, never a current_port —
+# so the check found zero vessels at any Gulf departure port, for every
+# supplier, every time. current_port now reflects where the vessel
+# currently is (its real departure port), destination stays the Indian
+# arrival port it's actually sailing to — a real tanker voyage in
+# progress, and now matchable by Agent 7's Layer 4 check.
 DEMO_VESSELS = [
     {
         "mmsi": "477111001",
         "name": "GULF CARRIER",
-        "lat": 25.6, "lon": 56.3,
-        "speed": 2.1, "heading": 95,
-        "destination": "Fujairah",  # matches UAE departure_port
+        "lat": 24.5, "lon": 56.3,
+        "speed": 12.4, "heading": 95,
+        "current_port": "Ras Tanura",
+        "destination": "SIKKA",
         "vessel_type": "crude_tanker",
         "source": "demo_seed",
     },
     {
         "mmsi": "477111002",
         "name": "ARABIAN STAR",
-        "lat": 26.6, "lon": 50.2,
-        "speed": 3.4, "heading": 110,
-        "destination": "Ras Tanura",  # matches Saudi Arabia departure_port
+        "lat": 22.1, "lon": 60.2,
+        "speed": 11.8, "heading": 110,
+        "current_port": "Fujairah",
+        "destination": "VADINAR",
         "vessel_type": "crude_tanker",
         "source": "demo_seed",
     },
     {
         "mmsi": "477111003",
         "name": "INDIA SPIRIT",
-        "lat": 30.5, "lon": 47.8,
-        "speed": 1.9, "heading": 120,
-        "destination": "Basra Oil Terminal",  # matches Iraq departure_port
+        "lat": 19.8, "lon": 63.4,
+        "speed": 13.1, "heading": 120,
+        "current_port": "Basra Oil Terminal",
+        "destination": "PARADIP",
+        "vessel_type": "crude_tanker",
+        "source": "demo_seed",
+    },
+    {
+        "mmsi": "477111004",
+        "name": "PERSIAN GLORY",
+        "lat": 26.2, "lon": 57.1,
+        "speed": 10.9, "heading": 88,
+        "current_port": "Novorossiysk",
+        "destination": "KOCHI",
         "vessel_type": "crude_tanker",
         "source": "demo_seed",
     },
@@ -121,6 +136,7 @@ async def seed_risk_state() -> None:
     now_iso = datetime.utcnow().isoformat()
     risk_vector = {
         **DEMO_RISK_STATE,
+        # Same extra fields Agent 3 writes, so consumers see an identical shape.
         "updated_at": now_iso,
         "updated_corridors": [],
     }
@@ -129,13 +145,9 @@ async def seed_risk_state() -> None:
 
 
 async def seed_vessels() -> None:
-    """Step 2 — three mock AIS tankers, positioned at supplier departure ports."""
+    """Step 2 — three mock AIS tanker positions in the Arabian Sea."""
     await set_vessels_live(DEMO_VESSELS)
-    logger.info(
-        "vessels:live seeded with %d tankers at Gulf departure ports (%s)",
-        len(DEMO_VESSELS),
-        ", ".join(v["destination"] for v in DEMO_VESSELS),
-    )
+    logger.info("vessels:live seeded with %d Arabian Sea tankers", len(DEMO_VESSELS))
 
 
 def seed_audit_event_sync() -> None:
@@ -180,7 +192,12 @@ def seed_audit_event_sync() -> None:
 async def seed_agent_heartbeats() -> None:
     """
     Step 4 — make all background agents report a run within the last
-    5 minutes. Payload shapes copied from each agent's real setex call.
+    5 minutes. Payload shapes copied from each agent's real setex call:
+      - agent1: timestamp/duration_ms/events_found/corridors_active/system_mode
+      - agent3: timestamp/corridors_updated/risk_vector
+      - agent2 has no reader today (written for spec completeness)
+      - agent5 included because routers/api.py's agent-status endpoint
+        reads agent1/agent3/agent5 for the Admin dashboard.
     """
     r = await get_redis()
     now_iso = datetime.utcnow().isoformat()
@@ -212,7 +229,9 @@ async def seed_agent_heartbeats() -> None:
 async def set_risk_freeze() -> None:
     """
     Step 5 — freeze flag: while this key exists, Agent 3 computes normally
-    and logs its heartbeat but skips overwriting risk:state.
+    and logs its heartbeat but skips overwriting risk:state, so the seeded
+    baseline (and any manually injected crisis values during the demo)
+    survive. Auto-expires after 30 min; delete early to resume live risk:
 
         docker-compose exec redis redis-cli DEL demo:risk_freeze
     """
@@ -238,7 +257,7 @@ async def verify() -> bool:
     vessels = await r.get("vessels:live")
     n = len(json.loads(vessels)) if vessels else 0
     print(f"vessels:live        -> {n} vessels")
-    ok = ok and n == 3
+    ok = ok and n == len(DEMO_VESSELS)  # dynamic — never goes stale if the list changes again
 
     for key in ("agent1:last_run", "agent2:last_run", "agent3:last_run", "agent5:last_run"):
         val = await r.get(key)
@@ -281,4 +300,4 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(asyncio.run(main()))
+    sys.exit(asyncio.run(main())) 
