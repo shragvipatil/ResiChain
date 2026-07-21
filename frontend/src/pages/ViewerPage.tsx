@@ -7,23 +7,33 @@
 import React, { useEffect, useState } from "react";
 import { getRiskState } from "../api/endpoints";
 import { CorridorRiskState } from "../types";
+import AppLayout from "../components/AppLayout";
 
 const getRiskColor = (risk: number) =>
   risk > 0.65 ? "text-red-400" : risk > 0.30 ? "text-amber-400" : "text-green-400";
 
 const ViewerPage: React.FC = () => {
   const [riskState, setRiskState] = useState<CorridorRiskState | null>(null);
+  const [fetchError, setFetchError] = useState(false);
 
   useEffect(() => {
-    getRiskState().then(setRiskState);
+    getRiskState()
+      .then((data) => { setRiskState(data); setFetchError(false); })
+      .catch(() => setFetchError(true));
   }, []);
 
   return (
-    <div className="min-h-screen bg-slate-900 p-8">
+    <AppLayout showRiskStrip={false}>
       <div className="mb-8">
         <h1 className="text-2xl font-medium text-white">Supply Chain Overview</h1>
         <p className="text-slate-400 text-sm mt-1">Read-only summary — Viewer access</p>
       </div>
+
+      {fetchError && (
+        <div className="mb-6 bg-red-900/30 border border-red-800 rounded-xl px-5 py-3">
+          <p className="text-red-400 text-sm">Backend unreachable — showing last known data.</p>
+        </div>
+      )}
 
       <div className="grid grid-cols-4 gap-4 mb-8">
         {riskState
@@ -49,7 +59,7 @@ const ViewerPage: React.FC = () => {
           Contact a Procurement Analyst or Ministry account holder for detailed operations views.
         </p>
       </div>
-    </div>
+    </AppLayout>
   );
 };
 

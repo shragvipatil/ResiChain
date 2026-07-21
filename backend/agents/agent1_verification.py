@@ -71,6 +71,11 @@ EVENT_EXPIRY_HOURS = 60
 # ---- Active Events Store (in memory) --------------------
 _active_corridor_events: dict = {}
 
+# Tracks the last stage ("WATCH"/"CONFIRMED") actually published per
+# corridor, so _evaluate_corridor_state can fire on genuine transitions
+# only — see Fix for the alert/publish-spam bug below.
+_last_published_stage: dict = {}
+
 
 async def run_verification_cycle():
     """
@@ -187,7 +192,22 @@ async def _evaluate_corridor_state(corridor: str):
     elif avg_confidence >= WATCH_THRESHOLD or max_severity >= 5:
         stage = "WATCH"
     else:
+        # Dropped back below WATCH — forget the remembered stage so that if
+        # this corridor escalates again later, it's treated as a fresh
+        # transition rather than "no change".
+        _last_published_stage.pop(corridor, None)
         return
+
+    if _last_published_stage.get(corridor) == stage:
+        # Same stage as last time we published for this corridor — this
+        # evaluation was triggered by another corroborating event, not a
+        # genuine transition. Skip the duplicate publish/alert.
+        logger.debug(
+            f"Corridor {corridor}: still {stage}, no transition — "
+            f"skipping duplicate publish/alert"
+        )
+        return
+    _last_published_stage[corridor] = stage
 
     verified_event = {
         "corridor": corridor,

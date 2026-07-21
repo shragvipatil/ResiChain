@@ -12,6 +12,7 @@ import json
 import hashlib
 import logging
 import os
+from datetime import datetime
 from db.redis_client import get_redis, publish_event
 
 logger = logging.getLogger(__name__)
@@ -102,7 +103,15 @@ async def fetch_gdelt_events() -> list:
                     location = row[51].lower() if row[51] else ""
                     source_url = row[57] if len(row) > 57 else ""
                     tone = float(row[33]) if row[33] else 0.0
-                    date_str = row[1]
+                    date_str = row[1]  # SQLDATE, format YYYYMMDD
+
+                    try:
+                        timestamp = datetime.strptime(date_str, "%Y%m%d").isoformat()
+                    except (ValueError, TypeError):
+                        # Malformed/missing SQLDATE — fall back to "now" rather
+                        # than fail the whole row; this matches the previous
+                        # (unintentional) behavior instead of dropping events.
+                        timestamp = datetime.utcnow().isoformat()
 
                     # Filter by event code
                     if not any(event_code.startswith(c) for c in RELEVANT_EVENT_CODES):
@@ -122,6 +131,7 @@ async def fetch_gdelt_events() -> list:
                         "source": "GDELT",
                         "event_code": event_code,
                         "date": date_str,
+                        "timestamp": timestamp,
                         "actor1": row[6],
                         "actor2": row[16],
                         "location": row[51],

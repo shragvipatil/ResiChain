@@ -430,4 +430,4 @@ async def fetch_alpha_vantage_daily():
         logger.info(f"Alpha Vantage: Stored {inserted} daily price records")
 
     except Exception as e:
-        logger.error(f"Alpha Vantage error: {e}") 
+        logger.error(f"Alpha Vantage error: {e}")
