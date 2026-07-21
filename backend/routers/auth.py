@@ -47,7 +47,13 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["Auth"])
 
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change_me")
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+if not JWT_SECRET_KEY:
+    raise RuntimeError(
+        "JWT_SECRET_KEY not set. Refusing to start with a guessable default — "
+        "anyone who read this source could otherwise forge valid tokens for "
+        "any role. Set JWT_SECRET_KEY in the environment."
+    )
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "60"))
 TOTP_ROLES = {"ADMIN", "MINISTRY_USER"}  # roles that require 2FA once enrolled

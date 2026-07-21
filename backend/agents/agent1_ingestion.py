@@ -7,10 +7,9 @@
 import logging
 import json
 from datetime import datetime
-from db.redis_client import get_redis, consume_events
+from db.redis_client import get_redis
 from agents.clients.gdelt_client import fetch_gdelt_events
 from agents.clients.ukmto_client import fetch_ukmto_alerts
-from agents.clients.ofac_client import download_and_store_ofac
 from agents.clients.alphavantage_client import fetch_brent_price_alert
 
 logger = logging.getLogger(__name__)
@@ -92,13 +91,12 @@ async def run_agent1_poll():
                 f"({source_count} sources, severity {max_severity})"
             )
 
-        # Update system mode
+        # system_mode still feeds into the agent1:last_run blob below
+        # (which routers/api.py's /agents/status endpoint actually reads).
+        # The separate "system:mode" key that used to be written here was
+        # never read anywhere in the codebase — removed rather than kept
+        # as dead state.
         system_mode = _determine_system_mode(alerts)
-        await redis.setex(
-            "system:mode",
-            300,
-            system_mode
-        )
 
         # Log run to Redis
         duration_ms = int(

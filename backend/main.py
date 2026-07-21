@@ -6,9 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-import redis.asyncio as aioredis
 import os
-import json
 import logging
 import asyncio
 
@@ -17,10 +15,6 @@ from db.redis_client import get_redis, init_redis_streams
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from agents.crisis_graph import build_crisis_graph_definition
-
-
-# Import routers (add more as you build agents)
-# from routers import risk, playbook, agents, auth
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -50,16 +44,24 @@ class ConnectionManager:
         logger.info(f"WebSocket connected. Total: {len(self.active_connections)}")
 
     def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
-        logger.info(f"WebSocket disconnected. Total: {len(self.active_connections)}")
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+            logger.info(f"WebSocket disconnected. Total: {len(self.active_connections)}")
 
     async def broadcast(self, message: dict):
-        """Broadcast a message to all connected dashboard clients."""
+        """Broadcast a message to all connected dashboard clients.
+
+        Connections that fail to receive (closed/dead but never got a clean
+        WebSocketDisconnect) are dropped here instead of being retried forever.
+        """
+        dead: list[WebSocket] = []
         for connection in self.active_connections:
             try:
                 await connection.send_json(message)
             except Exception:
-                pass
+                dead.append(connection)
+        for connection in dead:
+            self.disconnect(connection)
 
 manager = ConnectionManager()
 
@@ -112,12 +114,9 @@ async def lifespan(app: FastAPI):
         logger.info("Crisis LangGraph compiled and attached to app.state")
 
         # 5. Initialise Agent 2 / ChromaDB
-        #    Wrapped defensively: docker-compose.yml's chromadb healthcheck
-        #    was only just fixed, and Agent 2's stream-name bug
-        #    (events_verified vs events:verified) is still open on Person
-        #    B's side. A failure here logs an error and continues startup
-        #    instead of crashing the whole app and taking Agent 1/3/6 down
-        #    with it.
+        #    Wrapped defensively: a failure here logs an error and continues
+        #    startup instead of crashing the whole app and taking Agent
+        #    1/3/6 down with it.
         agent2_task = None
         try:
             from agents.agent2 import init_chromadb, run_agent2
@@ -259,6 +258,9 @@ app.add_middleware(
 # ---- Include Routers ----------------------------------------
 from routers.api import router as api_router
 app.include_router(api_router)
+
+from routers.auth import router as auth_router
+app.include_router(auth_router)
 
 from routers.pdf_router import router as pdf_router
 app.include_router(pdf_router)

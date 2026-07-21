@@ -231,4 +231,4 @@ def _analyze(risk_vector: Dict[str, float]) -> Dict[str, Any]:
         "blocked_chokepoints": blocked,
         "is_compound_event": True,
         "surviving_routes": surviving_routes,
-    } 
+    }   

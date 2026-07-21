@@ -7,6 +7,7 @@
 import feedparser
 import logging
 import hashlib
+from datetime import datetime
 from db.redis_client import get_redis, publish_event
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,15 @@ async def fetch_ukmto_alerts() -> list:
             published = entry.get("published", "")
             link = entry.get("link", "")
 
+            # feedparser exposes a pre-parsed UTC struct_time whenever it can
+            # recognize the feed's date format — much more robust than
+            # parsing the raw RFC 822 "published" string ourselves.
+            published_parsed = entry.get("published_parsed")
+            if published_parsed:
+                timestamp = datetime(*published_parsed[:6]).isoformat()
+            else:
+                timestamp = datetime.utcnow().isoformat()
+
             # Deduplication by entry ID
             entry_id = entry.get("id", link)
             cache_key = f"ukmto:processed:{hashlib.md5(entry_id.encode()).hexdigest()}"
@@ -75,6 +85,7 @@ async def fetch_ukmto_alerts() -> list:
                 "summary": entry.get("summary", "")[:500],
                 "corridor": corridor,
                 "published": published,
+                "timestamp": timestamp,
                 "link": link,
                 "severity": severity,
                 "raw_confidence": TRUST_SCORE

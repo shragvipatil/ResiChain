@@ -10,6 +10,7 @@ import logging
 import os
 import json
 import asyncio
+from datetime import datetime
 from db.redis_client import get_redis, publish_event
 
 logger = logging.getLogger(__name__)
@@ -73,6 +74,7 @@ async def fetch_brent_price_alert() -> dict:
                 "price_current": current_price,
                 "price_previous": previous_price,
                 "change_pct": pct_change * 100,
+                "timestamp": datetime.utcnow().isoformat(),
                 "raw_confidence": 0.95
             }
             await publish_event(event)

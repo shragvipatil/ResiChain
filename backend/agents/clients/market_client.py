@@ -148,6 +148,16 @@ def _get_demo_vessel_positions() -> list:
     Returns hardcoded demo vessel positions.
     Used when AISHub credentials are not available.
     Positions are realistic for Arabian Sea tanker routes.
+
+    current_port added (Day 19, found by Person B): Agent 7's
+    get_vessels_near_port() matches a candidate's DEPARTURE port
+    against current_port (then location, then destination). These
+    only had `destination` (the Indian arrival port), so the check
+    never found a match at any real Gulf departure port — TANKER_
+    UNAVAILABLE fired for every supplier, every time. Kept identical
+    to scripts/seed_demo_state.py's DEMO_VESSELS so both vessel-
+    seeding paths give the same coverage regardless of which one
+    happens to populate vessels:live.
     """
     return [
         {
@@ -155,6 +165,7 @@ def _get_demo_vessel_positions() -> list:
             "name": "GULF CARRIER",
             "lat": 24.5, "lon": 56.3,
             "speed": 12.4, "heading": 95,
+            "current_port": "Ras Tanura",
             "destination": "SIKKA",
             "vessel_type": "crude_tanker",
             "source": "demo"
@@ -164,6 +175,7 @@ def _get_demo_vessel_positions() -> list:
             "name": "ARABIAN STAR",
             "lat": 22.1, "lon": 60.2,
             "speed": 11.8, "heading": 110,
+            "current_port": "Fujairah",
             "destination": "VADINAR",
             "vessel_type": "crude_tanker",
             "source": "demo"
@@ -173,6 +185,7 @@ def _get_demo_vessel_positions() -> list:
             "name": "INDIA SPIRIT",
             "lat": 19.8, "lon": 63.4,
             "speed": 13.1, "heading": 120,
+            "current_port": "Basra Oil Terminal",
             "destination": "PARADIP",
             "vessel_type": "crude_tanker",
             "source": "demo"
@@ -182,6 +195,7 @@ def _get_demo_vessel_positions() -> list:
             "name": "PERSIAN GLORY",
             "lat": 26.2, "lon": 57.1,
             "speed": 10.9, "heading": 88,
+            "current_port": "Novorossiysk",
             "destination": "KOCHI",
             "vessel_type": "crude_tanker",
             "source": "demo"
@@ -416,4 +430,4 @@ async def fetch_alpha_vantage_daily():
         logger.info(f"Alpha Vantage: Stored {inserted} daily price records")
 
     except Exception as e:
-        logger.error(f"Alpha Vantage error: {e}") 
+        logger.error(f"Alpha Vantage error: {e}")

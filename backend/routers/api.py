@@ -14,10 +14,10 @@ from contracts.api_contracts import (
     MOCK_EVENTS,
     MOCK_PROCUREMENT_OPTIONS,
     MOCK_PLAYBOOK,
-    MOCK_AGENT_STATUS,
     MOCK_VESSELS,
     MOCK_KGRAPH
 )
+from agents.agent3_risk_engine import _determine_system_mode as _get_system_mode
 
 router = APIRouter(prefix="/api", tags=["API"])
 
@@ -29,15 +29,6 @@ _risk_weights = {
     "market_volatility": 0.10,
     "seasonal_risk": 0.05
 }
-
-
-def validate_token_format(authorization: Optional[str]) -> bool:
-    if not authorization:
-        return False
-    parts = authorization.split(" ")
-    if len(parts) != 2 or parts[0] != "Bearer":
-        return False
-    return True
 
 
 def _risk_to_status(score: float) -> str:
@@ -55,21 +46,6 @@ def _is_numeric_score(value) -> bool:
     agent3_risk_engine.py/main.py.
     """
     return type(value) in (int, float)
-
-
-def _get_system_mode(risk_data: dict) -> str:
-    scores = [
-        v for k, v in risk_data.items()
-        if _is_numeric_score(v) and k not in ["updated_at"]
-    ]
-    if not scores:
-        return "NORMAL"
-    max_score = max(scores)
-    if max_score >= 0.65:
-        return "CRISIS"
-    elif max_score >= 0.45:
-        return "WATCH"
-    return "NORMAL"
 
 
 @router.get("/risk-state")

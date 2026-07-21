@@ -579,4 +579,4 @@ async def _fallback_validate_batch(candidates: list, playbook_id=None) -> list:
                 f"for {candidate['option_id']}: {e}"
             )
 
-    return results 
+    return results
