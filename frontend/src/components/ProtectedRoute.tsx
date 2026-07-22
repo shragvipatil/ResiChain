@@ -22,7 +22,7 @@ import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { UserRole } from "../types";
 
-const ROLE_HOME: Record<UserRole, string> = {
+export const ROLE_HOME: Record<UserRole, string> = {
   MINISTRY_USER:        "/ministry",
   PROCUREMENT_ANALYST:  "/procurement",
   REFINERY_OPERATOR:    "/refinery",
@@ -39,10 +39,9 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children, allow }) => {
   const { user, loading, isAuthenticated } = useAuth();
   const location = useLocation();
 
-  // Still checking session on initial load — avoid a login flash
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-900 flex items-center justify-center">
+      <div className="min-h-screen bg-chart-navy flex items-center justify-center">
         <svg className="w-6 h-6 animate-spin text-slate-500" viewBox="0 0 24 24" fill="none">
           <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
           <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
@@ -55,8 +54,6 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children, allow }) => {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
-  // ADMIN can view every role's dashboard (per Day 11 spec — Admin sees
-  // system health, but nothing stops them viewing other dashboards too)
   const roleAllowed = !allow || allow.includes(user.role) || user.role === "ADMIN";
 
   if (!roleAllowed) {
