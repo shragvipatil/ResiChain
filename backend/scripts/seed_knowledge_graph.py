@@ -160,6 +160,9 @@ def seed_routes(tx):
         {"name": "Iraq to Paradip via Hormuz", "avg_transit_days": 9, "distance_km": 7200},
         {"name": "Iraq to Paradip via Cape", "avg_transit_days": 16, "distance_km": 12500},
         {"name": "Kuwait to Vizag via Hormuz", "avg_transit_days": 9, "distance_km": 7100},
+        {"name": "Kuwait to Vizag via Cape", "avg_transit_days": 24, "distance_km": 19500},
+        {"name": "USA to Paradip via Cape", "avg_transit_days": 26, "distance_km": 20800},
+        {"name": "Venezuela to Paradip via Cape", "avg_transit_days": 28, "distance_km": 21500},
     ]
     for r in routes:
         tx.run("""
@@ -262,6 +265,16 @@ def seed_relationships(tx):
         "MATCH (sf:StorageFacility {name:'Visakhapatnam SPR'}), (r:Refinery {name:'Paradip IOCL'}) MERGE (sf)-[:COVERS_REFINERY]->(r)",
         "MATCH (sf:StorageFacility {name:'Mangalore SPR'}), (r:Refinery {name:'Kochi BPCL'}) MERGE (sf)-[:COVERS_REFINERY]->(r)",
         "MATCH (sf:StorageFacility {name:'Padur SPR'}), (r:Refinery {name:'Jamnagar RIL'}) MERGE (sf)-[:COVERS_REFINERY]->(r)",
+
+        "MATCH (s:Supplier {name:'Kuwait'}), (r:Route {name:'Kuwait to Vizag via Cape'}) MERGE (s)-[:SHIPS_VIA]->(r)",
+        "MATCH (s:Supplier {name:'USA'}), (r:Route {name:'USA to Paradip via Cape'}) MERGE (s)-[:SHIPS_VIA]->(r)",
+        "MATCH (s:Supplier {name:'Venezuela'}), (r:Route {name:'Venezuela to Paradip via Cape'}) MERGE (s)-[:SHIPS_VIA]->(r)",
+        "MATCH (r:Route {name:'Kuwait to Vizag via Cape'}), (c:Chokepoint {name:'Cape of Good Hope'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
+        "MATCH (r:Route {name:'USA to Paradip via Cape'}), (c:Chokepoint {name:'Cape of Good Hope'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
+        "MATCH (r:Route {name:'Venezuela to Paradip via Cape'}), (c:Chokepoint {name:'Cape of Good Hope'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
+        "MATCH (r:Route {name:'Kuwait to Vizag via Cape'}), (p:Port {name:'Vizag'}) MERGE (r)-[:ARRIVES_AT]->(p)",
+        "MATCH (r:Route {name:'USA to Paradip via Cape'}), (p:Port {name:'Paradip'}) MERGE (r)-[:ARRIVES_AT]->(p)",
+        "MATCH (r:Route {name:'Venezuela to Paradip via Cape'}), (p:Port {name:'Paradip'}) MERGE (r)-[:ARRIVES_AT]->(p)",
     ]
     for q in queries:
         tx.run(q)

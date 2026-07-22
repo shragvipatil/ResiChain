@@ -160,7 +160,7 @@ def _analyze(risk_vector: Dict[str, float]) -> Dict[str, Any]:
     """
     blocked = [
         corridor for corridor, score in risk_vector.items()
-        if score >= CRISIS_THRESHOLD
+        if _is_numeric_score(score) and score >= CRISIS_THRESHOLD
     ]
 
     if len(blocked) < 2:
