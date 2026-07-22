@@ -228,7 +228,7 @@ def get_graph_for_visualization() -> Dict[str, Any]:
     RETURN id(n) AS id, labels(n) AS labels, properties(n) AS props
     """
     rels_query = """
-    MATCH (a)-[r]->(b)
+    MATCH (a)-[r]-(b)
     RETURN id(a) AS source, id(b) AS target, type(r) AS type, properties(r) AS props
     """
     return {
