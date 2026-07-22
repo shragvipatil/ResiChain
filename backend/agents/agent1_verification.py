@@ -34,10 +34,21 @@ SOURCE_TRUST = {
     "ReliefWeb": 0.75,
 }
 
+# Day 19 (found by Person B, test_agent1_verification.py): UKMTO's entry
+# used to also have "sanctions": 0.3, but _classify_event_type() checks
+# "ukmto" in source BEFORE looking at headline content — so any event
+# with source="UKMTO" is unconditionally classified "maritime", no
+# matter what the headline says. That sanctions entry could never
+# actually be looked up; removed rather than left as confusing dead
+# config. This is intentional, not a bug to fix by reordering the
+# classifier: UKMTO's whole mandate is maritime security advisories to
+# mariners, so even a UKMTO notice that mentions sanctions is still
+# structurally a maritime advisory, not a general sanctions-listing
+# event the way a GDELT or EIA report might be — treating every UKMTO
+# event as maritime-domain is the correct model, not an oversight.
 DOMAIN_MULTIPLIERS = {
     "UKMTO": {
         "maritime": 1.0,
-        "sanctions": 0.3,
         "conflict": 0.8,
         "price": 0.2,
     },

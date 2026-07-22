@@ -120,7 +120,27 @@ async def run_agent3():
         )
 
         logger.info(f"Agent 3: Risk vector updated: {risk_vector}")
-        await _emit_risk_update(risk_vector)
+
+        # Day 19 fix (found by Person B, test_agent3.py): _emit_risk_update
+        # is a downstream notification side effect (WebSocket broadcast to
+        # the dashboard) — not part of Agent 3's core job, which is
+        # compute + persist the risk vector. It already has its own
+        # internal try/except, but that protection vanishes the instant a
+        # caller (a test, or a future refactor) mocks _emit_risk_update
+        # directly: the mock replaces the whole function, internals
+        # included, so an exception from a mocked side_effect propagates
+        # straight past whatever guard used to live inside. You can't rely
+        # on a callee's internal error handling to protect the caller once
+        # the callee can be swapped out — the call site itself needs its
+        # own guard. Wrapping it here means run_agent3() always returns
+        # the already-computed, already-persisted risk_vector regardless
+        # of what happens to the broadcast: a transient dashboard
+        # disconnect should never make Agent 3 look like it crashed.
+        try:
+            await _emit_risk_update(risk_vector)
+        except Exception as e:
+            logger.error(f"Agent 3: risk update broadcast failed (non-fatal): {e}")
+
         return risk_vector
 
     except Exception as e:
