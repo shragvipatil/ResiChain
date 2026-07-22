@@ -1,21 +1,17 @@
 /**
- * App.tsx — updated Day 11
+ * App.tsx — updated Day 20
  *
- * Added:
- *   - AuthProvider wraps everything (must be outside AppProvider so
- *     Login/logout redirects still have router context)
- *   - Every dashboard route wrapped in ProtectedRoute with its allowed role
- *   - /viewer route added
- *   - Logout is available via the header on each page (Day 11 wiring
- *     inside each page is optional; a shared header is a nice Day 14 polish)
+ * "/" now serves a real landing page instead of an instant redirect
+ * to /login. Everything else is unchanged.
  */
 
 import React from "react";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AppProvider } from "./context/AppContext";
 import { AuthProvider } from "./context/AuthContext";
 import ProtectedRoute    from "./components/ProtectedRoute";
 
+import LandingPage     from "./pages/LandingPage";
 import MinistryPage    from "./pages/MinistryPage";
 import ProcurementPage from "./pages/ProcurementPage";
 import RefineryPage    from "./pages/RefineryPage";
@@ -29,6 +25,7 @@ const App: React.FC = () => (
     <AppProvider>
       <BrowserRouter>
         <Routes>
+          <Route path="/" element={<LandingPage />} />
           <Route path="/login" element={<LoginPage />} />
 
           <Route path="/ministry" element={
@@ -66,8 +63,6 @@ const App: React.FC = () => (
               <AdminPage />
             </ProtectedRoute>
           } />
-
-          <Route path="/" element={<Navigate to="/login" replace />} />
         </Routes>
       </BrowserRouter>
     </AppProvider>

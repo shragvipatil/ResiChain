@@ -21,7 +21,7 @@ interface AppLayoutProps {
 }
 
 const AppLayout: React.FC<AppLayoutProps> = ({ children, showRiskStrip = true }) => (
-  <div className="min-h-screen bg-slate-900 flex flex-col">
+  <div className="min-h-screen bg-chart-navy flex flex-col">
     <AppHeader showRiskStrip={showRiskStrip} />
     <main className="flex-1 p-8">{children}</main>
     <AppFooter />
