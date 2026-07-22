@@ -41,6 +41,19 @@ def init_db() -> None:
             cur.execute("""CREATE EXTENSION IF NOT EXISTS "pgcrypto";""")
 
             cur.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    username TEXT NOT NULL UNIQUE,
+                    email TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    totp_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                    totp_secret_encrypted TEXT,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+            """)
+
+            cur.execute("""
                 CREATE TABLE IF NOT EXISTS audit_events (
                     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                     event_id TEXT,
@@ -159,6 +172,48 @@ def init_db() -> None:
                 ALTER TABLE spr_schedules
                 ALTER COLUMN playbook_id DROP NOT NULL;
             """)
+
+
+def get_user_by_username(username: str) -> Optional[Dict[str, Any]]:
+    """
+    Fetch a user by username for login / 2FA-setup verification.
+    Returns None if no such user exists. Parameterized query — never
+    string-interpolate the username.
+    """
+    sql = """
+        SELECT id, username, email, password_hash, role,
+               totp_enabled, totp_secret_encrypted
+        FROM users
+        WHERE username = %(username)s
+        LIMIT 1
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, {"username": username})
+            row = cur.fetchone()
+            return row if row is not None else None
+
+
+def set_user_totp(user_id: str, encrypted_secret: str, enabled: bool) -> None:
+    """
+    Store the Fernet-encrypted TOTP secret for a user and set totp_enabled.
+    Called during /api/auth/2fa/setup enrollment. Positional argument
+    order (user_id, encrypted_secret, enabled) matches routers/auth.py's
+    call site — do not reorder without updating the caller.
+    """
+    sql = """
+        UPDATE users
+        SET totp_secret_encrypted = %(encrypted_secret)s,
+            totp_enabled = %(enabled)s
+        WHERE id = %(user_id)s
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, {
+                "encrypted_secret": encrypted_secret,
+                "enabled": enabled,
+                "user_id": user_id,
+            })
 
 
 def insert_audit_event(event: Dict[str, Any]) -> UUID:
