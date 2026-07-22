@@ -4,9 +4,9 @@
 
 body {
   margin: 0;
-  background-color: #0f172a;
-  color: #f1f5f9;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background-color: #0A1628;
+  color: #E8E4DC;
+  font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
 @keyframes slideInFade {
@@ -18,4 +18,12 @@ body {
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+/* Day 20 UI pass — signature compass-rose rotation for the live/
+   connection indicator, replacing a generic spinner. Slow and
+   deliberate (6s) — reads as "monitoring", not "loading". */
+@keyframes compassSweep {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
 }
