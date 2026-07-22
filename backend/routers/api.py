@@ -274,7 +274,7 @@ async def get_agents_status():
             "agent1": {
                 "id": "agent1",
                 "name": "Agent1_Ingestion",
-                "status": "running" if agent1_info else "idle",
+                "status": "idle" if agent1_info else "standby",
                 "last_run": agent1_info.get("timestamp") if agent1_info else None,
                 "events_processed": agent1_info.get("events_found", 0) if agent1_info else 0,
                 "mode": agent1_info.get("system_mode", "NORMAL") if agent1_info else "NORMAL"
@@ -289,9 +289,9 @@ async def get_agents_status():
             "agent3": {
                 "id": "agent3",
                 "name": "Agent3_RiskEngine",
-                "status": "running" if agent3_info else "idle",
+                "status": "idle" if agent3_info else "standby",
                 "last_run": agent3_info.get("timestamp") if agent3_info else None,
-                "mode": "RUNNING" if agent3_info else "STANDBY"
+                "mode": "ACTIVE" if agent3_info else "STANDBY"
             },
             "agent4": {"id": "agent4", "name": "Agent4_Compound", "status": "standby", "last_run": None, "mode": "STANDBY"},
             "agent5": {
