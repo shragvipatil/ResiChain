@@ -43,14 +43,17 @@ def seed_suppliers(tx):
         {"name": "USA", "country": "USA", "import_share_pct": 5.7},
         {"name": "Kuwait", "country": "Kuwait", "import_share_pct": 6.8},
         {"name": "Venezuela", "country": "Venezuela", "import_share_pct": 2.5},
-        {"name": "Iran", "country": "Iran", "import_share_pct": 1.0},
+        {"name": "Iran", "country": "Iran", "import_share_pct": 1.4},
     ]
     for s in suppliers:
-        tx.run("""
+        tx.run(
+            """
             MERGE (n:Supplier {name: $name})
             SET n.country = $country,
                 n.import_share_pct = $import_share_pct
-        """, s)
+            """,
+            s,
+        )
 
 
 def seed_crude_grades(tx):
@@ -65,12 +68,15 @@ def seed_crude_grades(tx):
         {"name": "Venezuelan Merey", "api_gravity": 16.0, "sulfur_pct": 2.5, "viscosity": "heavy"},
     ]
     for g in grades:
-        tx.run("""
+        tx.run(
+            """
             MERGE (n:CrudeGrade {name: $name})
             SET n.api_gravity = $api_gravity,
                 n.sulfur_pct = $sulfur_pct,
                 n.viscosity = $viscosity
-        """, g)
+            """,
+            g,
+        )
 
 
 def seed_chokepoints(tx):
@@ -81,11 +87,14 @@ def seed_chokepoints(tx):
         {"name": "Cape of Good Hope", "daily_capacity_mbd": 99.0},
     ]
     for c in points:
-        tx.run("""
+        tx.run(
+            """
             MERGE (n:Chokepoint {name: $name})
             SET n.daily_capacity_mbd = $daily_capacity_mbd,
                 n.current_risk = 0.0
-        """, c)
+            """,
+            c,
+        )
 
 
 def seed_ports(tx):
@@ -97,13 +106,16 @@ def seed_ports(tx):
         {"name": "Vizag", "country": "India", "max_vessel_dwt": 200000, "latitude": 17.6868, "longitude": 83.2185},
     ]
     for p in ports:
-        tx.run("""
+        tx.run(
+            """
             MERGE (n:Port {name: $name})
             SET n.country = $country,
                 n.max_vessel_dwt = $max_vessel_dwt,
                 n.latitude = $latitude,
                 n.longitude = $longitude
-        """, p)
+            """,
+            p,
+        )
 
 
 def seed_refineries(tx):
@@ -114,16 +126,21 @@ def seed_refineries(tx):
         {"name": "Paradip IOCL", "owner": "IOCL", "capacity_mbd": 0.30, "location": "Paradip", "compatible_share": 0.40},
     ]
     for r in refineries:
-        tx.run("""
+        tx.run(
+            """
             MERGE (n:Refinery {name: $name})
             SET n.owner = $owner,
                 n.capacity_mbd = $capacity_mbd,
                 n.location = $location,
                 n.compatible_share = $compatible_share
-        """, r)
+            """,
+            r,
+        )
+
 
 def seed_other_refineries(tx):
-    tx.run("""
+    tx.run(
+        """
         MERGE (n:Refinery {name: 'Other India Refineries'})
         SET n.owner = 'Various (aggregate)',
             n.capacity_mbd = 2.9,
@@ -131,7 +148,8 @@ def seed_other_refineries(tx):
             n.compatible_share = 1.0,
             n.is_aggregate = true,
             n.note = 'Aggregate node representing remaining Indian refining capacity not individually modeled; used only for national-scope weight normalization in simulation._compute_refinery_weights(), never shown as a dashboard card.'
-    """)
+        """
+    )
 
 
 def seed_storage(tx):
@@ -141,12 +159,15 @@ def seed_storage(tx):
         {"name": "Padur SPR", "type": "SPR", "capacity_mb": 17.0, "location": "Padur"},
     ]
     for s in sites:
-        tx.run("""
+        tx.run(
+            """
             MERGE (n:StorageFacility {name: $name})
             SET n.type = $type,
                 n.capacity_mb = $capacity_mb,
                 n.location = $location
-        """, s)
+            """,
+            s,
+        )
 
 
 def seed_routes(tx):
@@ -165,11 +186,14 @@ def seed_routes(tx):
         {"name": "Venezuela to Paradip via Cape", "avg_transit_days": 28, "distance_km": 21500},
     ]
     for r in routes:
-        tx.run("""
+        tx.run(
+            """
             MERGE (n:Route {name: $name})
             SET n.avg_transit_days = $avg_transit_days,
                 n.distance_km = $distance_km
-        """, r)
+            """,
+            r,
+        )
 
 
 def seed_contracts(tx):
@@ -180,14 +204,17 @@ def seed_contracts(tx):
         {"reference": "CNTR-IRAQ-001", "counterparty": "Iraq", "max_volume_mbd": 0.55, "current_volume_mbd": 0.28, "take_or_pay_floor": 0.18, "expiry": "2027-12-31"},
     ]
     for c in contracts:
-        tx.run("""
+        tx.run(
+            """
             MERGE (n:Contract {reference: $reference})
             SET n.counterparty = $counterparty,
                 n.max_volume_mbd = $max_volume_mbd,
                 n.current_volume_mbd = $current_volume_mbd,
                 n.take_or_pay_floor = $take_or_pay_floor,
                 n.expiry = $expiry
-        """, c)
+            """,
+            c,
+        )
 
 
 def seed_sanctions(tx):
@@ -195,12 +222,15 @@ def seed_sanctions(tx):
         {"entity": "Iran", "issuer": "OFAC", "date_imposed": "2018-11-05", "scope": "Crude exports restrictions"},
     ]
     for s in sanctions:
-        tx.run("""
+        tx.run(
+            """
             MERGE (n:Sanction {entity: $entity})
             SET n.issuer = $issuer,
                 n.date_imposed = $date_imposed,
                 n.scope = $scope
-        """, s)
+            """,
+            s,
+        )
 
 
 def seed_relationships(tx):
@@ -215,7 +245,6 @@ def seed_relationships(tx):
         "MATCH (s:Supplier {name:'Venezuela'}), (g:CrudeGrade {name:'Venezuelan Merey'}) MERGE (s)-[:PRODUCES]->(g)",
 
         "MATCH (g:CrudeGrade), (r:Refinery) WHERE NOT (g.name = 'Venezuelan Merey' AND r.name = 'Kochi BPCL') AND r.name <> 'Other India Refineries' MERGE (g)-[:COMPATIBLE_WITH]->(r)",
-
         "MATCH (g:CrudeGrade), (r:Refinery {name:'Other India Refineries'}) MERGE (g)-[:COMPATIBLE_WITH]->(r)",
 
         "MATCH (s:Supplier {name:'Saudi Arabia'}), (r:Route {name:'Saudi to Jamnagar via Hormuz'}) MERGE (s)-[:SHIPS_VIA]->(r)",
@@ -227,6 +256,9 @@ def seed_relationships(tx):
         "MATCH (s:Supplier {name:'Iraq'}), (r:Route {name:'Iraq to Paradip via Hormuz'}) MERGE (s)-[:SHIPS_VIA]->(r)",
         "MATCH (s:Supplier {name:'Iraq'}), (r:Route {name:'Iraq to Paradip via Cape'}) MERGE (s)-[:SHIPS_VIA]->(r)",
         "MATCH (s:Supplier {name:'Kuwait'}), (r:Route {name:'Kuwait to Vizag via Hormuz'}) MERGE (s)-[:SHIPS_VIA]->(r)",
+        "MATCH (s:Supplier {name:'Kuwait'}), (r:Route {name:'Kuwait to Vizag via Cape'}) MERGE (s)-[:SHIPS_VIA]->(r)",
+        "MATCH (s:Supplier {name:'USA'}), (r:Route {name:'USA to Paradip via Cape'}) MERGE (s)-[:SHIPS_VIA]->(r)",
+        "MATCH (s:Supplier {name:'Venezuela'}), (r:Route {name:'Venezuela to Paradip via Cape'}) MERGE (s)-[:SHIPS_VIA]->(r)",
 
         "MATCH (r:Route {name:'Saudi to Jamnagar via Hormuz'}), (c:Chokepoint {name:'Strait of Hormuz'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
         "MATCH (r:Route {name:'UAE to Kochi via Hormuz'}), (c:Chokepoint {name:'Strait of Hormuz'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
@@ -238,6 +270,9 @@ def seed_relationships(tx):
         "MATCH (r:Route {name:'Saudi to Kochi via Cape'}), (c:Chokepoint {name:'Cape of Good Hope'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
         "MATCH (r:Route {name:'UAE to Paradip via Cape'}), (c:Chokepoint {name:'Cape of Good Hope'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
         "MATCH (r:Route {name:'Iraq to Paradip via Cape'}), (c:Chokepoint {name:'Cape of Good Hope'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
+        "MATCH (r:Route {name:'Kuwait to Vizag via Cape'}), (c:Chokepoint {name:'Cape of Good Hope'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
+        "MATCH (r:Route {name:'USA to Paradip via Cape'}), (c:Chokepoint {name:'Cape of Good Hope'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
+        "MATCH (r:Route {name:'Venezuela to Paradip via Cape'}), (c:Chokepoint {name:'Cape of Good Hope'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
 
         "MATCH (r:Route {name:'Saudi to Jamnagar via Hormuz'}), (p:Port {name:'Jamnagar Sikka'}) MERGE (r)-[:ARRIVES_AT]->(p)",
         "MATCH (r:Route {name:'UAE to Kochi via Hormuz'}), (p:Port {name:'Kochi'}) MERGE (r)-[:ARRIVES_AT]->(p)",
@@ -248,6 +283,9 @@ def seed_relationships(tx):
         "MATCH (r:Route {name:'Iraq to Paradip via Hormuz'}), (p:Port {name:'Paradip'}) MERGE (r)-[:ARRIVES_AT]->(p)",
         "MATCH (r:Route {name:'Iraq to Paradip via Cape'}), (p:Port {name:'Paradip'}) MERGE (r)-[:ARRIVES_AT]->(p)",
         "MATCH (r:Route {name:'Kuwait to Vizag via Hormuz'}), (p:Port {name:'Vizag'}) MERGE (r)-[:ARRIVES_AT]->(p)",
+        "MATCH (r:Route {name:'Kuwait to Vizag via Cape'}), (p:Port {name:'Vizag'}) MERGE (r)-[:ARRIVES_AT]->(p)",
+        "MATCH (r:Route {name:'USA to Paradip via Cape'}), (p:Port {name:'Paradip'}) MERGE (r)-[:ARRIVES_AT]->(p)",
+        "MATCH (r:Route {name:'Venezuela to Paradip via Cape'}), (p:Port {name:'Paradip'}) MERGE (r)-[:ARRIVES_AT]->(p)",
 
         "MATCH (p:Port {name:'Jamnagar Sikka'}), (r:Refinery {name:'Jamnagar RIL'}) MERGE (p)-[:SUPPLIES]->(r)",
         "MATCH (p:Port {name:'Vadinar'}), (r:Refinery {name:'Vadinar Nayara'}) MERGE (p)-[:SUPPLIES]->(r)",
@@ -265,16 +303,6 @@ def seed_relationships(tx):
         "MATCH (sf:StorageFacility {name:'Visakhapatnam SPR'}), (r:Refinery {name:'Paradip IOCL'}) MERGE (sf)-[:COVERS_REFINERY]->(r)",
         "MATCH (sf:StorageFacility {name:'Mangalore SPR'}), (r:Refinery {name:'Kochi BPCL'}) MERGE (sf)-[:COVERS_REFINERY]->(r)",
         "MATCH (sf:StorageFacility {name:'Padur SPR'}), (r:Refinery {name:'Jamnagar RIL'}) MERGE (sf)-[:COVERS_REFINERY]->(r)",
-
-        "MATCH (s:Supplier {name:'Kuwait'}), (r:Route {name:'Kuwait to Vizag via Cape'}) MERGE (s)-[:SHIPS_VIA]->(r)",
-        "MATCH (s:Supplier {name:'USA'}), (r:Route {name:'USA to Paradip via Cape'}) MERGE (s)-[:SHIPS_VIA]->(r)",
-        "MATCH (s:Supplier {name:'Venezuela'}), (r:Route {name:'Venezuela to Paradip via Cape'}) MERGE (s)-[:SHIPS_VIA]->(r)",
-        "MATCH (r:Route {name:'Kuwait to Vizag via Cape'}), (c:Chokepoint {name:'Cape of Good Hope'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
-        "MATCH (r:Route {name:'USA to Paradip via Cape'}), (c:Chokepoint {name:'Cape of Good Hope'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
-        "MATCH (r:Route {name:'Venezuela to Paradip via Cape'}), (c:Chokepoint {name:'Cape of Good Hope'}) MERGE (r)-[:PASSES_THROUGH]->(c)",
-        "MATCH (r:Route {name:'Kuwait to Vizag via Cape'}), (p:Port {name:'Vizag'}) MERGE (r)-[:ARRIVES_AT]->(p)",
-        "MATCH (r:Route {name:'USA to Paradip via Cape'}), (p:Port {name:'Paradip'}) MERGE (r)-[:ARRIVES_AT]->(p)",
-        "MATCH (r:Route {name:'Venezuela to Paradip via Cape'}), (p:Port {name:'Paradip'}) MERGE (r)-[:ARRIVES_AT]->(p)",
     ]
     for q in queries:
         tx.run(q)

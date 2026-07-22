@@ -1,7 +1,7 @@
 """
 backend/scripts/seed_chroma.py
 
-Seed ChromaDB collection `disruptionreports` with historical disruption summaries
+Seed ChromaDB collection `disruption_reports` with historical disruption summaries
 for Agent 2 RAG grounding.
 
 This script is idempotent because db.chroma_client uses:

@@ -1,15 +1,3 @@
-"""
-backend/db/chroma_client.py
-
-Shared ChromaDB helper for ResiChain.
-
-Implements:
-- Collection: disruptionreports
-- Embedding model: all-MiniLM-L6-v2
-- Fix 4: collection.upsert with SHA-256 content hash IDs
-- Fix 12: verify collection metadata embedding_model at startup
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -22,7 +10,7 @@ from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
-COLLECTION_NAME = "disruptionreports"  # must match agents/agent2.py's COLLECTION_NAME — this was previously "disruptionreports" (no underscore), a different collection than the one the running app queries
+COLLECTION_NAME = "disruption_reports"
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 
 CHROMA_HOST = os.getenv("CHROMA_HOST", os.getenv("CHROMAHOST", "chromadb"))
@@ -37,8 +25,6 @@ def init_chroma() -> None:
     global _chroma_client, _collection
 
     _chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
-
-
     _collection = _chroma_client.get_or_create_collection(
         name=COLLECTION_NAME,
         metadata={"embedding_model": EMBEDDING_MODEL_NAME},
@@ -47,7 +33,7 @@ def init_chroma() -> None:
     metadata = getattr(_collection, "metadata", {}) or {}
     stored_model = metadata.get("embedding_model")
 
-    if stored_model != EMBEDDING_MODEL_NAME:
+    if stored_model is not None and stored_model != EMBEDDING_MODEL_NAME:
         raise ValueError(
             f"ChromaDB model mismatch for collection '{COLLECTION_NAME}': "
             f"stored='{stored_model}', current='{EMBEDDING_MODEL_NAME}'."
@@ -95,19 +81,22 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     return [[float(x) for x in vec] for vec in vectors]
 
 
-def upsert_documents(documents: list[str], metadatas: list[dict[str, Any]] | None = None) -> int:
+def upsert_documents(
+    documents: list[str],
+    metadatas: list[dict[str, Any]] | None = None,
+) -> int:
     collection = get_collection()
 
     if not documents:
         return collection.count()
 
-    paired: list[tuple[str, dict[str, Any]]] = []
     if metadatas is None:
         metadatas = [{} for _ in documents]
 
     if len(metadatas) != len(documents):
         raise ValueError("Length of metadatas must match length of documents.")
 
+    paired: list[tuple[str, dict[str, Any]]] = []
     for doc, meta in zip(documents, metadatas):
         cleaned = (doc or "").strip()
         if cleaned:

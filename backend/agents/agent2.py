@@ -185,8 +185,7 @@ def startup() -> None:
 
 
 def _doc_id(text: str) -> str:
-    """Fix 4 — deterministic document ID: SHA-256 hex digest of the text."""
-    return hashlib.sha256(text.encode()).hexdigest()
+    return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()
 
 
 def _encode(text_or_texts):
