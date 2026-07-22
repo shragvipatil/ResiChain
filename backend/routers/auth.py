@@ -58,6 +58,23 @@ JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "60"))
 TOTP_ROLES = {"ADMIN", "MINISTRY_USER"}  # roles that require 2FA once enrolled
 
+
+def _role_requires_totp(role: str) -> bool:
+    """
+    Security fix (found by Person B, live-reproduced): both call sites
+    below used to do `user["role"] in TOTP_ROLES` — an exact-case string
+    comparison. A role stored as "admin" (lowercase, or any casing other
+    than exactly "ADMIN") silently skipped the TOTP gate entirely and
+    got issued a full session token with no error, no log, nothing. This
+    is a fail-open security control: any future signup flow, admin-panel
+    edit, or migration that inserts an inconsistently-cased role string
+    silently disables 2FA for that account. Centralizing the normalized
+    check here (rather than repeating .strip().upper() at each call
+    site) means there's one place to audit or extend — e.g. to log a
+    warning if a role string doesn't match any known casing variant.
+    """
+    return (role or "").strip().upper() in TOTP_ROLES 
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
@@ -169,7 +186,7 @@ async def login(body: LoginRequest, response: Response):
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
     # TOTP gate for privileged roles
-    if user["role"] in TOTP_ROLES:
+    if _role_requires_totp(user["role"]): 
         if not user.get("totp_enabled"):
             # First login for a privileged role: signal frontend to run
             # 2FA enrollment before a session is granted.
@@ -243,8 +260,8 @@ async def totp_setup(body: TotpSetupRequest):
     user = get_user_by_username(body.username)
     if not user or not pwd_context.verify(body.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid username or password")
-    if user["role"] not in TOTP_ROLES:
-        raise HTTPException(status_code=400, detail="2FA not required for this role")
+    if not _role_requires_totp(user["role"]):
+        raise HTTPException(status_code=400, detail="2FA not required for this role") 
 
     secret = pyotp.random_base32()
     encrypted = _get_fernet().encrypt(secret.encode()).decode()
