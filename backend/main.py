@@ -7,6 +7,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import os
+import math
 import logging
 import asyncio
 
@@ -27,6 +28,28 @@ def _is_numeric_score(value) -> bool:
     found leaking into risk-vector filtering as if it were a real score.
     """
     return type(value) in (int, float)
+
+
+def _sanitize_json_floats(obj):
+    """
+    Recursively replace non-JSON-compliant float values (inf, -inf, NaN)
+    with None, so Starlette's JSONResponse (which sets allow_nan=False)
+    doesn't crash with "Out of range float values are not JSON compliant".
+    simulation.py deliberately returns float("inf") for days_to_depletion
+    when there's no meaningful import gap — that's correct internally,
+    but Starlette can't serialize it. This cleans the payload only at
+    the API response boundary; internal calculations are untouched.
+    """
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, dict):
+        return {k: _sanitize_json_floats(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_json_floats(v) for v in obj]
+    return obj
+
 
 # ---- Scheduler (APScheduler) --------------------------------
 # Runs background polling jobs (Agent 1 every 5 minutes)
@@ -319,7 +342,7 @@ async def trigger_crisis_graph(request: Request):
     }
 
     result = await run_crisis_graph(request.app.state.crisis_graph, risk_vector)
-    return result
+    return _sanitize_json_floats(result)
 
 # ---- WebSocket — Agent Status Stream ------------------------
 @app.websocket("/ws/agent-status")

@@ -15,6 +15,7 @@
     "@types/react-dom": "^19.2.3",
     "axios": "^1.18.1",
     "d3": "^7.9.0",
+    "framer-motion": "^12.42.2",
     "leaflet": "^1.9.4",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",

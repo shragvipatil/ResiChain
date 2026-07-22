@@ -18,13 +18,13 @@ const AppFooter: React.FC = () => {
   }, []);
 
   return (
-    <footer className="mt-auto border-t border-slate-800/80 px-6 md:px-8 h-10 flex items-center justify-between text-[10.5px] text-slate-600">
+    <footer className="mt-auto border-t border-chart-hairline/80 px-6 md:px-8 h-10 flex items-center justify-between text-[10.5px] text-slate-600">
       <span className="font-mono tracking-wide">
         RESICHAIN <span className="text-slate-700">·</span> ET AI HACKATHON 2026
       </span>
       <div className="flex items-center gap-4 font-mono">
         <span className="flex items-center gap-1.5">
-          <span className={`w-1 h-1 rounded-full ${wsConnected ? "bg-emerald-400" : "bg-slate-700"}`} />
+          <span className={`w-1 h-1 rounded-full ${wsConnected ? "bg-status-normal" : "bg-slate-700"}`} />
           {wsConnected ? "Connected" : "Offline"}
         </span>
         <span className="tabular-nums text-slate-700">

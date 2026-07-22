@@ -2,25 +2,16 @@
  * AppHeader.tsx
  *
  * Shared navigation header used across every authenticated page.
- * Replaces the per-page inline header that was previously duplicated
- * in MinistryPage, ProcurementPage, RefineryPage, AdminPage, etc.
  *
- * Two rows:
- *   1. Nav row — wordmark, role-aware links, connection state, identity
- *   2. Corridor strip — always-visible live risk snapshot for all four
- *      corridors, in physical route order (Hormuz -> Red Sea -> Suez ->
- *      Cape), so system state is legible even off the Ministry dashboard.
- *      Reads from the same AppContext riskState every page already
- *      shares — no new data plumbing.
- *
- * A page can omit the corridor strip via showRiskStrip={false} (e.g.
- * pages whose own riskState fetch isn't wired to context, so the
- * numbers wouldn't agree with what's shown in the page body).
- *
- * Connection indicator now has three states (Day 17 fix):
- *   Live -> Reconnecting… -> Offline
- * instead of just flipping between Live/Offline, so a WebSocket drop
- * shows the retry happening rather than looking like a dead system.
+ * Day 20 UI pass: nautical-chart palette (see tailwind.config.js —
+ * chart.navy/panel/hairline, status.critical/caution/normal/live).
+ * Critical uses IHO chart-standard magenta (#C81E5C), the real
+ * Admiralty convention for traffic separation/danger zones — chosen
+ * deliberately over a generic red, grounded in what this app actually
+ * monitors (maritime chokepoints). The one signature element: the
+ * connection indicator is a compass needle, not a plain dot — sweeps
+ * slowly when live, pulses when reconnecting, sits still when offline.
+ * All logic (props, hooks, handlers) is unchanged from the prior version.
  */
 
 import React from "react";
@@ -44,8 +35,6 @@ const NAV_LINKS: NavLink[] = [
   { to: "/viewer",      label: "Viewer",         allow: ["VIEWER"] },
 ];
 
-// Physical route order — this is a real sequence (chokepoint chain from
-// the Gulf outward), not an arbitrary list, so numbering it is meaningful.
 const CORRIDOR_ORDER = ["Hormuz", "Red_Sea", "Suez", "Cape"] as const;
 const CORRIDOR_LABEL: Record<string, string> = {
   Hormuz: "Hormuz",
@@ -56,10 +45,31 @@ const CORRIDOR_LABEL: Record<string, string> = {
 
 function riskTone(score: number | undefined) {
   if (score == null) return { text: "text-slate-600", bar: "bg-slate-700" };
-  if (score > 0.65) return { text: "text-red-400", bar: "bg-red-500" };
-  if (score > 0.30) return { text: "text-amber-400", bar: "bg-amber-500" };
-  return { text: "text-emerald-400", bar: "bg-emerald-500" };
+  if (score > 0.65) return { text: "text-status-critical", bar: "bg-status-critical" };
+  if (score > 0.30) return { text: "text-status-caution", bar: "bg-status-caution" };
+  return { text: "text-status-normal", bar: "bg-status-normal" };
 }
+
+// Small compass-needle SVG — the header's one signature element.
+// Sweeps when live, pulses when reconnecting, dims when offline.
+const CompassIndicator: React.FC<{ state: "live" | "reconnecting" | "offline" }> = ({ state }) => {
+  const color =
+    state === "live" ? "text-status-live"
+    : state === "reconnecting" ? "text-status-caution"
+    : "text-slate-600";
+
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={`w-3.5 h-3.5 ${color} ${state === "reconnecting" ? "animate-pulse" : ""}`}
+      style={state === "live" ? { animation: "compassSweep 6s linear infinite" } : undefined}
+    >
+      <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="1" opacity="0.35" />
+      <path d="M12 3 L14 12 L12 21 L10 12 Z" fill="currentColor" opacity="0.9" />
+      <circle cx="12" cy="12" r="1.3" fill="currentColor" />
+    </svg>
+  );
+};
 
 interface AppHeaderProps {
   showRiskStrip?: boolean;
@@ -80,8 +90,11 @@ const AppHeader: React.FC<AppHeaderProps> = ({ showRiskStrip = true }) => {
     (link) => !user?.role || link.allow.includes(user.role)
   );
 
+  const connState: "live" | "reconnecting" | "offline" =
+    wsConnected ? "live" : wsReconnecting ? "reconnecting" : "offline";
+
   return (
-    <header className="sticky top-0 z-30 bg-slate-900/90 backdrop-blur-md border-b border-slate-800/80">
+    <header className="sticky top-0 z-30 bg-chart-navy/90 backdrop-blur-md border-b border-chart-hairline/80">
       {/* Row 1 — wordmark, nav, identity */}
       <div className="px-6 md:px-8 h-14 flex items-center justify-between gap-6">
         <div className="flex items-center gap-7 min-w-0">
@@ -92,7 +105,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({ showRiskStrip = true }) => {
             <span className="font-mono text-signal text-[13px] font-semibold tracking-tight">
               RC
             </span>
-            <span className="w-px h-3.5 bg-slate-700" />
+            <span className="w-px h-3.5 bg-chart-hairline" />
             <span className="text-slate-200 text-[13px] font-medium tracking-tight group-hover:text-white transition-colors">
               ResiChain
             </span>
@@ -121,41 +134,17 @@ const AppHeader: React.FC<AppHeaderProps> = ({ showRiskStrip = true }) => {
 
         <div className="flex items-center gap-4 shrink-0">
           <div className="flex items-center gap-1.5 font-mono">
-            {wsConnected ? (
-              <>
-                <span
-                  className="w-1 h-1 rounded-full bg-emerald-400"
-                  style={{ boxShadow: "0 0 0 3px rgba(52,211,153,0.15)" }}
-                />
-                <span className="text-slate-500 text-[10px] uppercase tracking-wider">
-                  Live
-                </span>
-              </>
-            ) : wsReconnecting ? (
-              <>
-                <svg
-                  className="w-2.5 h-2.5 animate-spin text-amber-400"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                >
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                </svg>
-                <span className="text-amber-400 text-[10px] uppercase tracking-wider">
-                  Reconnecting…
-                </span>
-              </>
-            ) : (
-              <>
-                <span className="w-1 h-1 rounded-full bg-slate-600" />
-                <span className="text-slate-500 text-[10px] uppercase tracking-wider">
-                  Offline
-                </span>
-              </>
-            )}
+            <CompassIndicator state={connState} />
+            <span className={`text-[10px] uppercase tracking-wider ${
+              connState === "live" ? "text-slate-500"
+              : connState === "reconnecting" ? "text-status-caution"
+              : "text-slate-500"
+            }`}>
+              {connState === "live" ? "Live" : connState === "reconnecting" ? "Reconnecting…" : "Offline"}
+            </span>
           </div>
 
-          <div className="flex items-center gap-2.5 pl-4 border-l border-slate-800">
+          <div className="flex items-center gap-2.5 pl-4 border-l border-chart-hairline">
             <div className="text-right leading-none hidden sm:block">
               <p className="text-slate-300 text-[12px]">{user?.name ?? "—"}</p>
               <p className="text-slate-600 text-[10px] mt-0.5 font-mono uppercase tracking-wide">
@@ -164,7 +153,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({ showRiskStrip = true }) => {
             </div>
             <button
               onClick={handleLogout}
-              className="text-slate-500 hover:text-red-400 text-[11px] font-medium transition-colors px-2 py-1 rounded hover:bg-slate-800/60"
+              className="text-slate-500 hover:text-status-critical text-[11px] font-medium transition-colors px-2 py-1 rounded hover:bg-chart-panel/60"
             >
               Sign out
             </button>
@@ -174,7 +163,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({ showRiskStrip = true }) => {
 
       {/* Row 2 — live corridor risk strip, in physical route order */}
       {showRiskStrip && (
-        <div className="px-6 md:px-8 h-8 bg-black/20 border-t border-slate-800/60 flex items-center gap-6 overflow-x-auto">
+        <div className="px-6 md:px-8 h-8 bg-black/20 border-t border-chart-hairline/60 flex items-center gap-6 overflow-x-auto">
           {CORRIDOR_ORDER.map((corridor, i) => {
             const score = riskState?.corridors?.[corridor]?.risk_score;
             const tone = riskTone(score);
@@ -197,7 +186,7 @@ const AppHeader: React.FC<AppHeaderProps> = ({ showRiskStrip = true }) => {
             );
           })}
           {riskState?.system_mode && riskState.system_mode !== "NORMAL" && (
-            <span className="ml-auto shrink-0 font-mono text-[10px] font-medium px-2 py-0.5 rounded bg-red-950 text-red-400 border border-red-900 tracking-wide">
+            <span className="ml-auto shrink-0 font-mono text-[10px] font-medium px-2 py-0.5 rounded bg-status-critical/20 text-status-critical border border-status-critical/40 tracking-wide">
               {riskState.system_mode}
             </span>
           )}
