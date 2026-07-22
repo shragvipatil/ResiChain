@@ -287,21 +287,29 @@ async def node_agent4(state: CrisisGraphState) -> dict:
     })
 
     # Day 9 spec: Person C's frontend listens for a WebSocket event of
-    # type "compound_disruption_detected" to trigger the Leaflet Cape
-    # route polyline animation. This exact event type was never being
-    # emitted anywhere — only the generic PIPELINE_NODE_COMPLETE — so
-    # the animation could never fire. Emitting it here, only when a
-    # genuine compound event is detected.
+    # type "COMPOUNDDISRUPTIONDETECTED" to trigger the Leaflet Cape
+    # route polyline animation. Day 20 fix (found via live WebSocket
+    # probe + confirmed against AppContext.tsx by Person B): this was
+    # emitting "compound_disruption_detected" (lowercase, underscored)
+    # — every OTHER real-time event type the frontend switches on
+    # (COMPOUNDDISRUPTIONDETECTED, PLAYBOOKREADY, CONFIRMEDALERT) is
+    # uppercase with no separators, per CLAUDE.md. The mismatched
+    # casing meant this broadcast fired successfully every time, with
+    # completely correct data, but the frontend's exact-string switch
+    # never matched it — so the Cape-route animation could never fire,
+    # even though the backend was doing everything right. Aligning the
+    # backend string to the frontend's expected format rather than
+    # touching frontend code blind.
     if updated.get("is_compound_event"):
         try:
             from main import broadcast_to_dashboard
-            await broadcast_to_dashboard("compound_disruption_detected", {
+            await broadcast_to_dashboard("COMPOUNDDISRUPTIONDETECTED", {
                 "compound_risk": updated.get("compound_risk"),
                 "blocked_chokepoints": updated.get("blocked_chokepoints", []),
                 "timestamp": datetime.utcnow().isoformat(),
             })
         except Exception as e:
-            logger.error(f"Crisis graph: compound_disruption_detected broadcast failed: {e}")
+            logger.error(f"Crisis graph: COMPOUNDDISRUPTIONDETECTED broadcast failed: {e}")
 
     return updated
 
@@ -491,6 +499,26 @@ async def node_agent8(state: CrisisGraphState) -> dict:
         "status": result.get("status"),
         "playbook_id": result.get("playbook_id"),
     })
+
+    # Day 20 fix: PLAYBOOKREADY was never emitted anywhere — the frontend
+    # switches on this exact string (per CLAUDE.md / AppContext.tsx,
+    # confirmed by Person B) to know a playbook actually finished
+    # generating, distinct from the generic per-node progress ticks
+    # above. Only fires on genuine success (a real status, not the
+    # ERROR/failed-to-generate case a few lines up) — an error state
+    # isn't "ready", it's a failure the frontend should handle
+    # differently if it ever adds that path.
+    if result.get("status") not in (None, "ERROR"):
+        try:
+            from main import broadcast_to_dashboard
+            await broadcast_to_dashboard("PLAYBOOKREADY", {
+                "playbook_id": result.get("playbook_id"),
+                "status": result.get("status"),
+                "generated_at": result.get("generated_at"),
+            })
+        except Exception as e:
+            logger.error(f"Crisis graph: PLAYBOOKREADY broadcast failed: {e}")
+
     return {"playbook": result}
 
 

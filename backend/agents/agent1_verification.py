@@ -272,6 +272,26 @@ async def _evaluate_corridor_state(corridor: str):
         except Exception as e:
             logger.error(f"Alert hook failed for CONFIRMED ({corridor}): {e}")
 
+        # Day 20 fix: CONFIRMEDALERT was never broadcast to the
+        # dashboard at all — only the SMS side effect existed. The
+        # frontend switches on this exact string (per CLAUDE.md /
+        # AppContext.tsx, confirmed by Person B) to show the live
+        # signal -> risk -> procurement -> playbook chain starting.
+        # Separate try/except from the SMS call above, same reasoning
+        # as Agent 3's _emit_risk_update fix: a WebSocket hiccup must
+        # never block or get entangled with the SMS alert or the
+        # verification pipeline's own correctness.
+        try:
+            from main import broadcast_to_dashboard
+            await broadcast_to_dashboard("CONFIRMEDALERT", {
+                "corridor": corridor,
+                "confidence": round(avg_confidence, 4),
+                "sources_confirming": unique_sources,
+                "timestamp": verified_event["timestamp"],
+            })
+        except Exception as e:
+            logger.error(f"CONFIRMEDALERT broadcast failed for {corridor}: {e}")
+
 
 def _classify_event_type(event: dict) -> str:
     """Classifies event into a domain type for multiplier lookup."""
@@ -345,4 +365,4 @@ async def _archive_expired_events(corridor: str, events: list):
                 "archived_at": datetime.utcnow(),
             })
     except Exception as e:
-        logger.error(f"Archive error: {e}") 
+        logger.error(f"Archive error: {e}")
