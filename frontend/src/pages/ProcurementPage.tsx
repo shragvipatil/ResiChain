@@ -151,6 +151,26 @@ const ContractHeadroomPanel: React.FC = () => (
   </div>
 );
 
+// ── Panel 4: Fetch Error Banner ────────────────────────────────────────────────
+
+const FetchErrorBanner: React.FC = () => (
+  <div className="mb-6 bg-red-900/30 border border-red-800 rounded-xl px-5 py-4 flex items-start gap-3">
+    <span className="text-red-400 text-lg mt-0.5">⚠</span>
+    <div>
+      <p className="text-red-400 text-sm font-medium">Unable to load procurement data</p>
+      <p className="text-slate-500 text-xs mt-0.5">
+        Backend may be unreachable. Check that FastAPI is running on port 8000.
+      </p>
+      <button
+        onClick={() => window.location.reload()}
+        className="mt-2 text-xs text-blue-400 hover:underline"
+      >
+        Retry
+      </button>
+    </div>
+  </div>
+);
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 const ProcurementPage: React.FC = () => {
@@ -159,15 +179,19 @@ const ProcurementPage: React.FC = () => {
   const [procurement, setProcurement] = useState<ProcurementResponse | null>(null);
   const [prices, setPrices]           = useState<PricesResponse | null>(null);
   const [loading, setLoading]         = useState(true);
+  const [fetchError, setFetchError]   = useState(false);
 
   useEffect(() => {
     Promise.all([getProcurementOptions(), getLivePrices()])
       .then(([p, pr]) => { setProcurement(p); setPrices(pr); })
+      .catch(() => setFetchError(true))
       .finally(() => setLoading(false));
   }, []);
 
   return (
     <AppLayout>
+      {fetchError && <FetchErrorBanner />}
+
       <div className="mb-8 flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-medium text-white">Procurement Operations</h1>

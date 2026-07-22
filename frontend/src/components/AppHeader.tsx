@@ -16,6 +16,11 @@
  * A page can omit the corridor strip via showRiskStrip={false} (e.g.
  * pages whose own riskState fetch isn't wired to context, so the
  * numbers wouldn't agree with what's shown in the page body).
+ *
+ * Connection indicator now has three states (Day 17 fix):
+ *   Live -> Reconnecting… -> Offline
+ * instead of just flipping between Live/Offline, so a WebSocket drop
+ * shows the retry happening rather than looking like a dead system.
  */
 
 import React from "react";
@@ -62,7 +67,7 @@ interface AppHeaderProps {
 
 const AppHeader: React.FC<AppHeaderProps> = ({ showRiskStrip = true }) => {
   const { user, logout } = useAuth();
-  const { riskState, wsConnected } = useAppContext();
+  const { riskState, wsConnected, wsReconnecting } = useAppContext();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -116,15 +121,38 @@ const AppHeader: React.FC<AppHeaderProps> = ({ showRiskStrip = true }) => {
 
         <div className="flex items-center gap-4 shrink-0">
           <div className="flex items-center gap-1.5 font-mono">
-            <span
-              className={`w-1 h-1 rounded-full ${
-                wsConnected ? "bg-emerald-400" : "bg-slate-600"
-              }`}
-              style={wsConnected ? { boxShadow: "0 0 0 3px rgba(52,211,153,0.15)" } : undefined}
-            />
-            <span className="text-slate-500 text-[10px] uppercase tracking-wider">
-              {wsConnected ? "Live" : "Offline"}
-            </span>
+            {wsConnected ? (
+              <>
+                <span
+                  className="w-1 h-1 rounded-full bg-emerald-400"
+                  style={{ boxShadow: "0 0 0 3px rgba(52,211,153,0.15)" }}
+                />
+                <span className="text-slate-500 text-[10px] uppercase tracking-wider">
+                  Live
+                </span>
+              </>
+            ) : wsReconnecting ? (
+              <>
+                <svg
+                  className="w-2.5 h-2.5 animate-spin text-amber-400"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                >
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                <span className="text-amber-400 text-[10px] uppercase tracking-wider">
+                  Reconnecting…
+                </span>
+              </>
+            ) : (
+              <>
+                <span className="w-1 h-1 rounded-full bg-slate-600" />
+                <span className="text-slate-500 text-[10px] uppercase tracking-wider">
+                  Offline
+                </span>
+              </>
+            )}
           </div>
 
           <div className="flex items-center gap-2.5 pl-4 border-l border-slate-800">
